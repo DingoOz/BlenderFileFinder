@@ -39,3 +39,42 @@
 
 # debug information files
 *.dwo
+
+# Build directory
+build/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Claude/AI assistant files
+CLAUDE.md
+
+# ImGui config
+imgui.ini
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.cproject
+.settings/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# CMake generated files (outside build/)
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
