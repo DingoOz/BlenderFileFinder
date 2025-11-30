@@ -100,9 +100,11 @@ public:
      * @brief Start background generation for multiple files.
      * @param files List of .blend files to generate previews for
      * @param callback Optional progress callback
+     * @param forceRegenerate If true, regenerate even if preview exists
      */
     void startBatchGeneration(const std::vector<std::filesystem::path>& files,
-                              ProgressCallback callback = nullptr);
+                              ProgressCallback callback = nullptr,
+                              bool forceRegenerate = false);
 
     /**
      * @brief Check if batch generation is in progress.
@@ -175,7 +177,7 @@ private:
     void loadPreviewFrames(const std::filesystem::path& blendFile, PreviewFrames& preview);
 
     std::filesystem::path m_cacheDir;       ///< Preview cache directory
-    int m_frameCount = 24;                  ///< Frames per preview animation
+    int m_frameCount = 144;                 ///< Frames per preview animation (6x slower)
     int m_resolution = 128;                 ///< Frame resolution (pixels)
 
     std::map<std::filesystem::path, PreviewFrames> m_previews;  ///< Loaded previews

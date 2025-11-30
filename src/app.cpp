@@ -500,6 +500,8 @@ void App::renderUI() {
     renderNewFilesDialog();
     renderPreviewGenerationDialog();
     renderUserGuide();
+    renderStatisticsDialog();
+    renderBulkTagDialog();
 
     auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - uiStart).count();
 
@@ -523,8 +525,11 @@ void App::renderMenuBar() {
             if (ImGui::MenuItem("Check for New Files...", "Ctrl+N")) {
                 checkForNewFiles();
             }
-            if (ImGui::MenuItem("Generate Rotation Previews...", nullptr, false, !m_previewCache->isGenerating())) {
-                startPreviewGeneration();
+            if (ImGui::MenuItem("Generate New Previews...", nullptr, false, !m_previewCache->isGenerating())) {
+                startPreviewGeneration(false);
+            }
+            if (ImGui::MenuItem("Regenerate All Previews...", nullptr, false, !m_previewCache->isGenerating())) {
+                startPreviewGeneration(true);
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Cleanup Missing Files")) {
@@ -535,6 +540,16 @@ void App::renderMenuBar() {
             ImGui::Separator();
             if (ImGui::MenuItem("Exit")) {
                 glfwSetWindowShouldClose(m_window, GLFW_TRUE);
+            }
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Edit")) {
+            if (ImGui::MenuItem("Bulk Add Tags...", "Ctrl+T")) {
+                m_showBulkTagDialog = true;
+                m_bulkTagSelectedLocation = -1;
+                m_bulkTagName[0] = '\0';
+                m_bulkTagPreviewFiles.clear();
             }
             ImGui::EndMenu();
         }
@@ -556,6 +571,9 @@ void App::renderMenuBar() {
         if (ImGui::BeginMenu("Help")) {
             if (ImGui::MenuItem("User Guide", "F1")) {
                 m_showUserGuide = true;
+            }
+            if (ImGui::MenuItem("Database Statistics...")) {
+                m_showStatisticsDialog = true;
             }
             ImGui::Separator();
             if (ImGui::MenuItem("About")) {
@@ -1161,7 +1179,7 @@ void App::renderNewFilesDialog() {
     ImGui::End();
 }
 
-void App::startPreviewGeneration() {
+void App::startPreviewGeneration(bool forceRegenerate) {
     // Collect all primary files (not backups) from the database
     auto files = m_database->getAllFiles();
     std::vector<std::filesystem::path> primaryFiles;
@@ -1185,7 +1203,8 @@ void App::startPreviewGeneration() {
     m_previewCache->startBatchGeneration(primaryFiles,
         [this](int current, int total, const std::string& filename) {
             m_currentPreviewFile = filename;
-        });
+        },
+        forceRegenerate);
 
     DEBUG_LOG("Started preview generation for " << primaryFiles.size() << " files");
 }
@@ -1300,8 +1319,10 @@ void App::renderUserGuide() {
                 "Generate animated turntable previews that play when you hover over a file."
             );
             ImGui::Spacing();
-            ImGui::BulletText("Go to File > Generate Rotation Previews");
-            ImGui::BulletText("This renders each .blend file from multiple angles");
+            ImGui::BulletText("Go to File > Generate New Previews (skips existing)");
+            ImGui::BulletText("Features the 5 largest objects in each scene");
+            ImGui::BulletText("Each object is shown individually, fit to frame");
+            ImGui::BulletText("Camera rotates around each object in sequence");
             ImGui::BulletText("Requires Blender to be installed and in your PATH");
             ImGui::BulletText("Previews are cached in ~/.cache/BlenderFileFinder/");
             ImGui::Spacing();
@@ -1326,6 +1347,341 @@ void App::renderUserGuide() {
 
         if (ImGui::Button("Close", ImVec2(120, 0))) {
             m_showUserGuide = false;
+        }
+    }
+    ImGui::End();
+}
+
+void App::renderStatisticsDialog() {
+    if (!m_showStatisticsDialog) {
+        return;
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(450, 350), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+
+    if (ImGui::Begin("Database Statistics", &m_showStatisticsDialog, ImGuiWindowFlags_NoCollapse)) {
+
+        // Database info
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "DATABASE");
+        ImGui::Separator();
+
+        ImGui::Text("Location:");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.5f, 0.7f, 0.9f, 1.0f), "%s", m_database->getDatabasePath().string().c_str());
+
+        // Get database file size
+        if (std::filesystem::exists(m_database->getDatabasePath())) {
+            auto fileSize = std::filesystem::file_size(m_database->getDatabasePath());
+            std::string sizeStr;
+            if (fileSize < 1024) {
+                sizeStr = std::to_string(fileSize) + " B";
+            } else if (fileSize < 1024 * 1024) {
+                sizeStr = std::to_string(fileSize / 1024) + " KB";
+            } else {
+                sizeStr = std::to_string(fileSize / (1024 * 1024)) + " MB";
+            }
+            ImGui::Text("Size:");
+            ImGui::SameLine();
+            ImGui::Text("%s", sizeStr.c_str());
+        }
+
+        ImGui::Spacing();
+        ImGui::Spacing();
+
+        // Content statistics
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "CONTENT");
+        ImGui::Separator();
+
+        int fileCount = m_database->getTotalFileCount();
+        int tagCount = m_database->getTotalTagCount();
+        int locationCount = m_database->getTotalScanLocationCount();
+
+        ImGui::Columns(2, "stats", false);
+        ImGui::SetColumnWidth(0, 180);
+
+        ImGui::Text("Scan Locations:");
+        ImGui::NextColumn();
+        ImGui::Text("%d", locationCount);
+        ImGui::NextColumn();
+
+        ImGui::Text("Total Files:");
+        ImGui::NextColumn();
+        ImGui::Text("%d", fileCount);
+        ImGui::NextColumn();
+
+        ImGui::Text("Unique Tags:");
+        ImGui::NextColumn();
+        ImGui::Text("%d", tagCount);
+        ImGui::NextColumn();
+
+        ImGui::Text("File Groups:");
+        ImGui::NextColumn();
+        ImGui::Text("%zu", m_fileGroups.size());
+        ImGui::NextColumn();
+
+        ImGui::Columns(1);
+
+        ImGui::Spacing();
+        ImGui::Spacing();
+
+        // File breakdown by location
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "FILES BY LOCATION");
+        ImGui::Separator();
+
+        auto locations = m_database->getAllScanLocations();
+        if (locations.empty()) {
+            ImGui::TextDisabled("No scan locations configured.");
+        } else {
+            ImGui::BeginChild("LocationStats", ImVec2(0, 100), true);
+            for (const auto& loc : locations) {
+                auto files = m_database->getFilesByScanLocation(loc.id);
+                std::string displayName = loc.name.empty() ? loc.path.filename().string() : loc.name;
+                ImGui::Text("%s:", displayName.c_str());
+                ImGui::SameLine(200);
+                ImGui::TextColored(ImVec4(0.5f, 0.8f, 0.5f, 1.0f), "%zu files", files.size());
+            }
+            ImGui::EndChild();
+        }
+
+        ImGui::Spacing();
+        ImGui::Spacing();
+
+        // Cache info
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "CACHE");
+        ImGui::Separator();
+
+        auto cacheDir = m_previewCache->getCacheDir();
+        size_t previewCount = 0;
+        size_t cacheSize = 0;
+        if (std::filesystem::exists(cacheDir)) {
+            try {
+                for (const auto& entry : std::filesystem::recursive_directory_iterator(cacheDir)) {
+                    if (entry.is_regular_file()) {
+                        cacheSize += entry.file_size();
+                        if (entry.path().extension() == ".png") {
+                            previewCount++;
+                        }
+                    }
+                }
+            } catch (...) {}
+        }
+
+        ImGui::Columns(2, "cache_stats", false);
+        ImGui::SetColumnWidth(0, 180);
+
+        ImGui::Text("Preview Frames:");
+        ImGui::NextColumn();
+        ImGui::Text("%zu", previewCount);
+        ImGui::NextColumn();
+
+        ImGui::Text("Cache Size:");
+        ImGui::NextColumn();
+        std::string cacheSizeStr;
+        if (cacheSize < 1024) {
+            cacheSizeStr = std::to_string(cacheSize) + " B";
+        } else if (cacheSize < 1024 * 1024) {
+            cacheSizeStr = std::to_string(cacheSize / 1024) + " KB";
+        } else {
+            cacheSizeStr = std::to_string(cacheSize / (1024 * 1024)) + " MB";
+        }
+        ImGui::Text("%s", cacheSizeStr.c_str());
+        ImGui::NextColumn();
+
+        ImGui::Columns(1);
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if (ImGui::Button("Close", ImVec2(120, 0))) {
+            m_showStatisticsDialog = false;
+        }
+    }
+    ImGui::End();
+}
+
+void App::renderBulkTagDialog() {
+    if (!m_showBulkTagDialog) {
+        return;
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(550, 450), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+
+    if (ImGui::Begin("Bulk Add Tags", &m_showBulkTagDialog, ImGuiWindowFlags_NoCollapse)) {
+
+        ImGui::TextWrapped("Add a tag to all .blend files in a scanned folder.");
+        ImGui::Spacing();
+
+        // Section 1: Select folder
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "1. SELECT FOLDER");
+        ImGui::Separator();
+
+        auto locations = m_database->getAllScanLocations();
+        if (locations.empty()) {
+            ImGui::TextDisabled("No scan locations configured. Add folders first.");
+        } else {
+            ImGui::BeginChild("FolderList", ImVec2(0, 120), true);
+
+            for (size_t i = 0; i < locations.size(); ++i) {
+                const auto& loc = locations[i];
+                std::string displayName = loc.name.empty() ? loc.path.filename().string() : loc.name;
+
+                // Get file count for this location
+                auto files = m_database->getFilesByScanLocation(loc.id);
+                size_t fileCount = files.size();
+
+                // Format: "FolderName (123 files)"
+                char label[256];
+                snprintf(label, sizeof(label), "%s (%zu files)", displayName.c_str(), fileCount);
+
+                bool isSelected = (m_bulkTagSelectedLocation == static_cast<int>(i));
+                if (ImGui::Selectable(label, isSelected)) {
+                    m_bulkTagSelectedLocation = static_cast<int>(i);
+                    // Update preview files
+                    m_bulkTagPreviewFiles = m_database->getFilesByScanLocation(loc.id);
+                }
+
+                // Show full path on hover
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s", loc.path.string().c_str());
+                }
+            }
+
+            ImGui::EndChild();
+        }
+
+        ImGui::Spacing();
+        ImGui::Spacing();
+
+        // Section 2: Enter tag name
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "2. ENTER TAG NAME");
+        ImGui::Separator();
+
+        ImGui::SetNextItemWidth(300);
+        ImGui::InputText("##tagname", m_bulkTagName, sizeof(m_bulkTagName));
+
+        // Show existing tags as suggestions
+        if (strlen(m_bulkTagName) > 0) {
+            auto allTags = m_database->getAllTags();
+            std::vector<std::string> matchingTags;
+            for (const auto& tag : allTags) {
+                // Case-insensitive partial match
+                std::string lowerTag = tag;
+                std::string lowerInput = m_bulkTagName;
+                std::transform(lowerTag.begin(), lowerTag.end(), lowerTag.begin(), ::tolower);
+                std::transform(lowerInput.begin(), lowerInput.end(), lowerInput.begin(), ::tolower);
+                if (lowerTag.find(lowerInput) != std::string::npos) {
+                    matchingTags.push_back(tag);
+                }
+            }
+
+            if (!matchingTags.empty() && matchingTags.size() <= 5) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("Existing:");
+                for (const auto& tag : matchingTags) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton(tag.c_str())) {
+                        strncpy(m_bulkTagName, tag.c_str(), sizeof(m_bulkTagName) - 1);
+                    }
+                }
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::Spacing();
+
+        // Section 3: Preview
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "3. PREVIEW");
+        ImGui::Separator();
+
+        if (m_bulkTagSelectedLocation >= 0 && m_bulkTagSelectedLocation < static_cast<int>(locations.size())) {
+            const auto& selectedLoc = locations[m_bulkTagSelectedLocation];
+            std::string displayName = selectedLoc.name.empty() ? selectedLoc.path.filename().string() : selectedLoc.name;
+
+            ImGui::Text("Folder: ");
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.5f, 0.7f, 0.9f, 1.0f), "%s", displayName.c_str());
+
+            ImGui::Text("Files to tag: ");
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.5f, 0.8f, 0.5f, 1.0f), "%zu", m_bulkTagPreviewFiles.size());
+
+            if (strlen(m_bulkTagName) > 0) {
+                ImGui::Text("Tag to apply: ");
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.3f, 1.0f), "\"%s\"", m_bulkTagName);
+            }
+
+            // Show file list preview
+            if (!m_bulkTagPreviewFiles.empty()) {
+                ImGui::BeginChild("FilePreview", ImVec2(0, 80), true);
+                int shown = 0;
+                for (const auto& file : m_bulkTagPreviewFiles) {
+                    if (shown >= 10) {
+                        ImGui::TextDisabled("... and %zu more files", m_bulkTagPreviewFiles.size() - 10);
+                        break;
+                    }
+                    ImGui::TextDisabled("  %s", file.path.filename().string().c_str());
+                    shown++;
+                }
+                ImGui::EndChild();
+            }
+        } else {
+            ImGui::TextDisabled("Select a folder above to see preview.");
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // Action buttons
+        bool canApply = (m_bulkTagSelectedLocation >= 0 &&
+                        m_bulkTagSelectedLocation < static_cast<int>(locations.size()) &&
+                        strlen(m_bulkTagName) > 0 &&
+                        !m_bulkTagPreviewFiles.empty());
+
+        if (!canApply) {
+            ImGui::BeginDisabled();
+        }
+
+        if (ImGui::Button("Apply Tag", ImVec2(120, 0))) {
+            // Apply the tag to all files
+            std::string tagName = m_bulkTagName;
+            int taggedCount = 0;
+
+            for (const auto& file : m_bulkTagPreviewFiles) {
+                // Only tag .blend files (not backups)
+                if (file.path.extension() == ".blend") {
+                    m_database->addTagToFile(file.path, tagName);
+                    taggedCount++;
+                }
+            }
+
+            DEBUG_LOG("Bulk tagged " << taggedCount << " files with '" << tagName << "'");
+
+            // Reset and close
+            m_showBulkTagDialog = false;
+            m_bulkTagSelectedLocation = -1;
+            m_bulkTagName[0] = '\0';
+            m_bulkTagPreviewFiles.clear();
+
+            // Force refresh of tag cache
+            m_tagsUpdateFrame = -1000;
+        }
+
+        if (!canApply) {
+            ImGui::EndDisabled();
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            m_showBulkTagDialog = false;
+            m_bulkTagSelectedLocation = -1;
+            m_bulkTagName[0] = '\0';
+            m_bulkTagPreviewFiles.clear();
         }
     }
     ImGui::End();

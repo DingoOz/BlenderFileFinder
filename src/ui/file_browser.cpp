@@ -2,12 +2,15 @@
 #include "imgui.h"
 #include <algorithm>
 #include <cstring>
+#include <unistd.h>
+#include <regex>
 
 namespace BlenderFileFinder {
 
 FileBrowser::FileBrowser() {
     m_currentPath = std::filesystem::current_path();
     refreshDirectoryList();
+    refreshNetworkMounts();
 }
 
 void FileBrowser::setCurrentPath(const std::filesystem::path& path) {
@@ -82,6 +85,16 @@ void FileBrowser::addRecentPath(const std::filesystem::path& path) {
 }
 
 void FileBrowser::render() {
+    // Track frame count for periodic refresh
+    static int frameCount = 0;
+    frameCount++;
+
+    // Refresh network mounts periodically (every ~5 seconds)
+    if (frameCount - m_networkRefreshFrame > 300) {
+        refreshNetworkMounts();
+        m_networkRefreshFrame = frameCount;
+    }
+
     // Navigation buttons
     if (ImGui::Button("^ Up")) {
         navigateUp();
@@ -150,30 +163,83 @@ void FileBrowser::render() {
 
     ImGui::Separator();
 
-    // Directory list - show available height
+    // Calculate available height
     float availHeight = ImGui::GetContentRegionAvail().y - 60; // Reserve space for add button
     if (availHeight < 100) availHeight = 100;
 
-    ImGui::BeginChild("DirList", ImVec2(0, availHeight), true);
-
-    // Store path to navigate to (can't modify m_directoryEntries while iterating)
+    // Store path to navigate to (can't modify lists while iterating)
     std::filesystem::path pathToNavigate;
 
-    for (const auto& entry : m_directoryEntries) {
-        std::string name = entry.path().filename().string();
+    ImGui::BeginChild("BrowseArea", ImVec2(0, availHeight), true);
 
-        // Skip hidden directories
-        if (!name.empty() && name[0] == '.') {
-            continue;
+    // Network Locations section (collapsible)
+    if (!m_networkMounts.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.3f, 0.4f, 0.6f));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.3f, 0.4f, 0.5f, 0.8f));
+
+        bool networkOpen = ImGui::CollapsingHeader("Network Locations",
+            ImGuiTreeNodeFlags_DefaultOpen);
+
+        ImGui::PopStyleColor(2);
+
+        if (networkOpen) {
+            ImGui::Indent(8.0f);
+
+            for (const auto& mount : m_networkMounts) {
+                ImGui::PushID(mount.path.string().c_str());
+
+                // Network icon style with colored text
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.7f, 0.9f, 1.0f));
+                bool clicked = ImGui::Selectable(mount.displayName.c_str(), false,
+                    ImGuiSelectableFlags_AllowDoubleClick);
+                ImGui::PopStyleColor();
+
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s", mount.path.string().c_str());
+                }
+
+                if (clicked) {
+                    pathToNavigate = mount.path;
+                }
+
+                ImGui::PopID();
+            }
+
+            ImGui::Unindent(8.0f);
+            ImGui::Spacing();
+        }
+    }
+
+    // Local Directories section
+    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.25f, 0.25f, 0.25f, 0.6f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.35f, 0.35f, 0.35f, 0.8f));
+
+    bool localOpen = ImGui::CollapsingHeader("Local Directories",
+        ImGuiTreeNodeFlags_DefaultOpen);
+
+    ImGui::PopStyleColor(2);
+
+    if (localOpen) {
+        ImGui::Indent(8.0f);
+
+        for (const auto& entry : m_directoryEntries) {
+            std::string name = entry.path().filename().string();
+
+            // Skip hidden directories
+            if (!name.empty() && name[0] == '.') {
+                continue;
+            }
+
+            // Show folder
+            bool clicked = ImGui::Selectable(name.c_str(), false,
+                ImGuiSelectableFlags_AllowDoubleClick);
+
+            if (clicked) {
+                pathToNavigate = entry.path();
+            }
         }
 
-        // Show folder icon style
-        bool clicked = ImGui::Selectable(name.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick);
-        if (clicked && ImGui::IsMouseDoubleClicked(0)) {
-            pathToNavigate = entry.path();
-        } else if (clicked) {
-            pathToNavigate = entry.path();
-        }
+        ImGui::Unindent(8.0f);
     }
 
     ImGui::EndChild();
@@ -182,6 +248,135 @@ void FileBrowser::render() {
     if (!pathToNavigate.empty()) {
         setCurrentPath(pathToNavigate);
     }
+}
+
+NetworkMount FileBrowser::parseGvfsMount(const std::filesystem::path& mountPath) const {
+    NetworkMount mount;
+    mount.path = mountPath;
+
+    std::string name = mountPath.filename().string();
+
+    // Parse GVFS mount name formats:
+    // smb-share:server=hostname,share=sharename
+    // sftp:host=hostname
+    // nfs:server=hostname,share=path
+    // dav:host=hostname,ssl=true
+
+    // Detect protocol
+    size_t colonPos = name.find(':');
+    if (colonPos != std::string::npos) {
+        mount.protocol = name.substr(0, colonPos);
+    }
+
+    // Parse key=value pairs
+    std::regex kvRegex("([a-z]+)=([^,]+)");
+    std::sregex_iterator it(name.begin(), name.end(), kvRegex);
+    std::sregex_iterator end;
+
+    for (; it != end; ++it) {
+        std::smatch match = *it;
+        std::string key = match[1].str();
+        std::string value = match[2].str();
+
+        if (key == "server" || key == "host") {
+            mount.server = value;
+        } else if (key == "share") {
+            mount.share = value;
+        }
+    }
+
+    // Build display name
+    if (!mount.server.empty()) {
+        // Remove .local suffix for cleaner display
+        std::string serverDisplay = mount.server;
+        if (serverDisplay.length() > 6 &&
+            serverDisplay.substr(serverDisplay.length() - 6) == ".local") {
+            serverDisplay = serverDisplay.substr(0, serverDisplay.length() - 6);
+        }
+
+        if (!mount.share.empty()) {
+            mount.displayName = serverDisplay + "/" + mount.share;
+        } else {
+            mount.displayName = serverDisplay;
+        }
+
+        // Add protocol prefix for non-SMB
+        if (!mount.protocol.empty() && mount.protocol != "smb-share") {
+            mount.displayName = "[" + mount.protocol + "] " + mount.displayName;
+        }
+    } else {
+        // Fallback to folder name
+        mount.displayName = name;
+    }
+
+    return mount;
+}
+
+void FileBrowser::refreshNetworkMounts() {
+    m_networkMounts.clear();
+
+    // Get current user ID for GVFS path
+    uid_t uid = getuid();
+    std::filesystem::path gvfsPath = "/run/user/" + std::to_string(uid) + "/gvfs";
+
+    // Check GVFS mounts (most common for desktop users)
+    if (std::filesystem::exists(gvfsPath)) {
+        try {
+            for (const auto& entry : std::filesystem::directory_iterator(gvfsPath)) {
+                if (entry.is_directory()) {
+                    NetworkMount mount = parseGvfsMount(entry.path());
+                    m_networkMounts.push_back(mount);
+                }
+            }
+        } catch (const std::filesystem::filesystem_error&) {
+            // Permission denied or other error
+        }
+    }
+
+    // Check /mnt for manually mounted shares
+    std::filesystem::path mntPath = "/mnt";
+    if (std::filesystem::exists(mntPath)) {
+        try {
+            for (const auto& entry : std::filesystem::directory_iterator(mntPath)) {
+                if (entry.is_directory()) {
+                    NetworkMount mount;
+                    mount.path = entry.path();
+                    mount.displayName = "[mnt] " + entry.path().filename().string();
+                    mount.protocol = "mount";
+                    m_networkMounts.push_back(mount);
+                }
+            }
+        } catch (const std::filesystem::filesystem_error&) {
+            // Permission denied
+        }
+    }
+
+    // Check /media/<user> for removable/network mounts
+    const char* username = std::getenv("USER");
+    if (username) {
+        std::filesystem::path mediaPath = std::filesystem::path("/media") / username;
+        if (std::filesystem::exists(mediaPath)) {
+            try {
+                for (const auto& entry : std::filesystem::directory_iterator(mediaPath)) {
+                    if (entry.is_directory()) {
+                        NetworkMount mount;
+                        mount.path = entry.path();
+                        mount.displayName = "[media] " + entry.path().filename().string();
+                        mount.protocol = "media";
+                        m_networkMounts.push_back(mount);
+                    }
+                }
+            } catch (const std::filesystem::filesystem_error&) {
+                // Permission denied
+            }
+        }
+    }
+
+    // Sort by display name
+    std::sort(m_networkMounts.begin(), m_networkMounts.end(),
+              [](const NetworkMount& a, const NetworkMount& b) {
+                  return a.displayName < b.displayName;
+              });
 }
 
 } // namespace BlenderFileFinder

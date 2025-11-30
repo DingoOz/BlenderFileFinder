@@ -190,20 +190,39 @@ bool PreviewCache::generatePreview(const std::filesystem::path& blendFile) {
     auto outputDir = getPreviewDir(blendFile);
     std::filesystem::create_directories(outputDir);
 
-    // Build Blender command
+    // Build Blender command - log output for debugging
+    auto logFile = outputDir / "render.log";
     std::stringstream cmd;
     cmd << "blender --background --python \"" << scriptPath.string() << "\" -- "
         << "\"" << blendFile.string() << "\" "
         << "\"" << outputDir.string() << "\" "
         << m_frameCount << " "
         << m_resolution
-        << " > /dev/null 2>&1";
+        << " > \"" << logFile.string() << "\" 2>&1";
 
-    DEBUG_LOG("Generating preview: " << blendFile.filename());
+    DEBUG_LOG("Generating preview: \"" << blendFile.filename() << "\"");
 
     int result = std::system(cmd.str().c_str());
 
-    if (result == 0 && std::filesystem::exists(outputDir / "frame_000.png")) {
+    // Check for success
+    bool success = (result == 0) && std::filesystem::exists(outputDir / "frame_000.png");
+
+    if (!success) {
+        // Read and log the error output
+        if (std::filesystem::exists(logFile)) {
+            std::ifstream log(logFile);
+            std::string line;
+            int lineCount = 0;
+            while (std::getline(log, line) && lineCount < 20) {
+                if (!line.empty() && line.find("Read prefs") == std::string::npos) {
+                    DEBUG_LOG("  Blender: " << line);
+                    lineCount++;
+                }
+            }
+        }
+    }
+
+    if (success) {
         DEBUG_LOG("Preview generated successfully for " << blendFile.filename());
         // Update cache
         m_previewExistsCache[blendFile] = true;
@@ -216,7 +235,8 @@ bool PreviewCache::generatePreview(const std::filesystem::path& blendFile) {
 }
 
 void PreviewCache::startBatchGeneration(const std::vector<std::filesystem::path>& files,
-                                        ProgressCallback callback) {
+                                        ProgressCallback callback,
+                                        bool forceRegenerate) {
     if (m_isGenerating) {
         DEBUG_LOG("Generation already in progress");
         return;
@@ -227,7 +247,7 @@ void PreviewCache::startBatchGeneration(const std::vector<std::filesystem::path>
     m_currentFile = 0;
     m_totalFiles = static_cast<int>(files.size());
 
-    m_generationThread = std::jthread([this, files, callback]() {
+    m_generationThread = std::jthread([this, files, callback, forceRegenerate]() {
         for (size_t i = 0; i < files.size() && !m_cancelRequested; ++i) {
             m_currentFile = static_cast<int>(i);
 
@@ -235,8 +255,8 @@ void PreviewCache::startBatchGeneration(const std::vector<std::filesystem::path>
                 callback(static_cast<int>(i), static_cast<int>(files.size()), files[i].filename().string());
             }
 
-            // Skip if preview already exists
-            if (!hasPreview(files[i])) {
+            // Skip if preview already exists (unless forcing regeneration)
+            if (forceRegenerate || !hasPreview(files[i])) {
                 generatePreview(files[i]);
             }
         }

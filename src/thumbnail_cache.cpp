@@ -178,18 +178,21 @@ void ThumbnailCache::loadThread() {
         if (parseMs > 50) {
             DEBUG_LOG("Slow parseQuick: " << pathToLoad.filename() << " took " << parseMs << "ms (thread)");
         }
-        if (info && info->thumbnail) {
-            LoadRequest request;
-            request.path = pathToLoad;
-            request.thumbnail = std::move(*info->thumbnail);
 
-            std::lock_guard<std::mutex> lock(m_loadedMutex);
-            m_loadedQueue.push(std::move(request));
+        LoadRequest request;
+        request.path = pathToLoad;
+
+        if (info && info->thumbnail) {
+            request.thumbnail = std::move(*info->thumbnail);
         } else {
-            // Mark as done even if no thumbnail
-            std::lock_guard<std::mutex> lock(m_queueMutex);
-            m_loadingSet.erase(pathToLoad.string());
+            // No thumbnail in file - create an empty thumbnail marker
+            // This will cause the placeholder to be cached for this file
+            request.thumbnail.width = 0;
+            request.thumbnail.height = 0;
         }
+
+        std::lock_guard<std::mutex> lock(m_loadedMutex);
+        m_loadedQueue.push(std::move(request));
     }
 }
 
@@ -203,14 +206,49 @@ void ThumbnailCache::processLoadedThumbnails() {
         auto& request = m_loadedQueue.front();
         std::string key = request.path.string();
 
-        // Create texture on main thread (OpenGL context)
-        auto texStart = std::chrono::steady_clock::now();
-        uint32_t textureId = createTexture(request.thumbnail);
-        auto texMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - texStart).count();
-        if (texMs > 10) {
-            DEBUG_LOG("Slow texture creation: " << request.path.filename() << " took " << texMs << "ms");
+        uint32_t textureId;
+
+        // Check if this is a valid thumbnail or a "no thumbnail" marker
+        if (request.thumbnail.width > 0 && request.thumbnail.height > 0) {
+            // Create texture on main thread (OpenGL context)
+            auto texStart = std::chrono::steady_clock::now();
+            textureId = createTexture(request.thumbnail);
+            auto texMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - texStart).count();
+            if (texMs > 10) {
+                DEBUG_LOG("Slow texture creation: " << request.path.filename() << " took " << texMs << "ms");
+            }
+        } else {
+            // No thumbnail in file - use placeholder but cache it
+            // so we don't keep trying to load this file
+            textureId = m_placeholderTexture;
         }
         processedCount++;
+
+        // Check if already in cache (shouldn't happen, but safeguard)
+        auto existingIt = m_cacheMap.find(key);
+        if (existingIt != m_cacheMap.end()) {
+            bool existingIsReal = (existingIt->second->textureId != m_placeholderTexture);
+            bool newIsReal = (textureId != m_placeholderTexture);
+
+            if (existingIsReal && !newIsReal) {
+                // Don't overwrite a real thumbnail with placeholder - skip
+                m_loadedQueue.pop();
+                continue;
+            }
+            if (existingIsReal && newIsReal) {
+                // Both real - keep existing, skip new
+                m_loadedQueue.pop();
+                continue;
+            }
+            if (!existingIsReal && !newIsReal) {
+                // Both placeholder - skip
+                m_loadedQueue.pop();
+                continue;
+            }
+            // Existing is placeholder, new is real - remove old entry to replace
+            m_cacheList.erase(existingIt->second);
+            m_cacheMap.erase(existingIt);
+        }
 
         // Evict if cache is full
         while (m_cacheList.size() >= m_maxCacheSize) {
@@ -247,14 +285,20 @@ void ThumbnailCache::evictOldest() {
     if (m_cacheList.empty()) return;
 
     auto& oldest = m_cacheList.back();
-    glDeleteTextures(1, &oldest.textureId);
+    // Don't delete the placeholder texture - it's shared
+    if (oldest.textureId != m_placeholderTexture) {
+        glDeleteTextures(1, &oldest.textureId);
+    }
     m_cacheMap.erase(oldest.path.string());
     m_cacheList.pop_back();
 }
 
 void ThumbnailCache::clear() {
     for (auto& entry : m_cacheList) {
-        glDeleteTextures(1, &entry.textureId);
+        // Don't delete the placeholder texture - it's shared
+        if (entry.textureId != m_placeholderTexture) {
+            glDeleteTextures(1, &entry.textureId);
+        }
     }
     m_cacheList.clear();
     m_cacheMap.clear();

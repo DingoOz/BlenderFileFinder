@@ -90,6 +90,8 @@ private:
     void renderNewFilesDialog();
     void renderPreviewGenerationDialog();
     void renderUserGuide();
+    void renderStatisticsDialog();
+    void renderBulkTagDialog();
     /// @}
 
     /// @name Actions
@@ -102,7 +104,7 @@ private:
     void openInBlender(const std::filesystem::path& path);
     void openContainingFolder(const std::filesystem::path& path);
     void checkForNewFiles();
-    void startPreviewGeneration();
+    void startPreviewGeneration(bool forceRegenerate = false);
     /// @}
 
     GLFWwindow* m_window = nullptr;             ///< GLFW window handle
@@ -163,6 +165,19 @@ private:
     /// @name User Guide Dialog
     /// @{
     bool m_showUserGuide = false;
+    /// @}
+
+    /// @name Statistics Dialog
+    /// @{
+    bool m_showStatisticsDialog = false;
+    /// @}
+
+    /// @name Bulk Tag Dialog
+    /// @{
+    bool m_showBulkTagDialog = false;
+    int m_bulkTagSelectedLocation = -1;
+    char m_bulkTagName[128] = {0};
+    std::vector<BlendFileInfo> m_bulkTagPreviewFiles;
     /// @}
 
     /// @name Background Loading

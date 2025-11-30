@@ -13,10 +13,24 @@
 namespace BlenderFileFinder {
 
 /**
+ * @brief Information about a discovered network mount.
+ */
+struct NetworkMount {
+    std::filesystem::path path;      ///< Full path to the mount
+    std::string displayName;         ///< Human-readable name (e.g., "server/share")
+    std::string server;              ///< Server hostname
+    std::string share;               ///< Share name
+    std::string protocol;            ///< Protocol (smb, nfs, sftp, etc.)
+};
+
+/**
  * @brief Directory browser widget for navigating the filesystem.
  *
  * Displays a list of subdirectories in the current path with
  * navigation controls (up, home) and sorting options.
+ *
+ * Also discovers and displays network mounts (GVFS, /mnt, /media)
+ * for easy access to network shares.
  *
  * Used in the sidebar to allow users to browse to directories
  * they want to scan for .blend files.
@@ -80,20 +94,37 @@ public:
      */
     void addRecentPath(const std::filesystem::path& path);
 
+    /**
+     * @brief Refresh the list of network mounts.
+     *
+     * Discovers GVFS mounts, /mnt, and /media directories.
+     */
+    void refreshNetworkMounts();
+
+    /**
+     * @brief Get discovered network mounts.
+     * @return Vector of network mount information
+     */
+    const std::vector<NetworkMount>& getNetworkMounts() const { return m_networkMounts; }
+
 private:
     void navigateUp();
     void refreshDirectoryList();
     void sortDirectoryList();
+    NetworkMount parseGvfsMount(const std::filesystem::path& mountPath) const;
 
     std::filesystem::path m_currentPath;                    ///< Current directory
     std::vector<std::filesystem::directory_entry> m_directoryEntries; ///< Directory listing
     std::vector<std::filesystem::path> m_recentPaths;       ///< Recently visited paths
+    std::vector<NetworkMount> m_networkMounts;              ///< Discovered network mounts
 
     PathCallback m_scanCallback;                            ///< Scan request callback
     char m_pathBuffer[512] = {0};                           ///< Path input buffer
 
     SortMode m_sortMode = SortMode::Name;                   ///< Current sort mode
     bool m_sortAscending = true;                            ///< Sort direction
+    bool m_showNetworkLocations = true;                     ///< Show network section
+    int m_networkRefreshFrame = -1000;                      ///< Frame counter for refresh
 };
 
 } // namespace BlenderFileFinder

@@ -95,6 +95,12 @@ public:
     void setShowAllVersions(bool show) { m_showAllVersions = show; }
     /// @}
 
+    /// @name Folder Grouping
+    /// @{
+    bool isGroupByFolder() const { return m_groupByFolder; }
+    void setGroupByFolder(bool group) { m_groupByFolder = group; }
+    /// @}
+
     /// @name Sorting
     /// @{
     enum class SortMode { Name, Date, Size };
@@ -145,6 +151,7 @@ private:
     SortMode m_sortMode = SortMode::Name;       ///< Current sort mode
     bool m_sortAscending = true;                ///< Sort direction
     bool m_showAllVersions = false;             ///< Show all versions vs grouped
+    bool m_groupByFolder = false;               ///< Group files by containing folder
 
     std::filesystem::path m_selectedPath;        ///< Currently selected file
     std::string m_tagFilter;                    ///< Active tag filter

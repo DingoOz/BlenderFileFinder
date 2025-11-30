@@ -192,6 +192,12 @@ void FileView::render(std::vector<FileGroup>& groups, ThumbnailCache& cache,
         ImGui::SetTooltip("Show all file versions instead of grouping");
     }
 
+    ImGui::SameLine();
+    ImGui::Checkbox("By Folder", &m_groupByFolder);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Group files by their containing folder");
+    }
+
     // Tag filter dropdown
     ImGui::SameLine();
     ImGui::SetNextItemWidth(120);
@@ -312,11 +318,26 @@ void FileView::renderGridView(std::vector<FileGroup>& groups, ThumbnailCache& ca
         DEBUG_LOG("About to start file render loop...");
     }
 
-    // Render each file
+    // Group files by folder if enabled
+    std::map<std::filesystem::path, std::vector<const BlendFileInfo*>> folderGroups;
+    std::vector<std::filesystem::path> folderOrder;  // Maintain insertion order
+
+    if (m_groupByFolder) {
+        for (const BlendFileInfo* filePtr : filesToDisplay) {
+            auto folder = filePtr->path.parent_path();
+            if (folderGroups.find(folder) == folderGroups.end()) {
+                folderOrder.push_back(folder);
+            }
+            folderGroups[folder].push_back(filePtr);
+        }
+    }
+
+    // Render each file (possibly grouped by folder)
     int fileIndex = 0;
     auto loopStart = std::chrono::steady_clock::now();
 
-    for (const BlendFileInfo* filePtr : filesToDisplay) {
+    // Lambda to render a single file card
+    auto renderFileCard = [&](const BlendFileInfo* filePtr, int& col, int columns) {
         auto itemStart = std::chrono::steady_clock::now();
         const BlendFileInfo& file = *filePtr;
 
@@ -412,6 +433,16 @@ void FileView::renderGridView(std::vector<FileGroup>& groups, ThumbnailCache& ca
         if (!showingPreview) {
             if (logThis) DEBUG_LOG("  [" << fileIndex << "] cache.getTexture...");
             uint32_t textureId = cache.getTexture(file.path);
+
+            // If no embedded thumbnail, try to use first frame of animated preview
+            // Only use already-loaded previews to avoid performance issues
+            if (textureId == cache.getPlaceholderTexture()) {
+                PreviewFrames* preview = previewCache.getPreview(file.path);
+                if (preview && preview->loaded && !preview->textureIds.empty()) {
+                    textureId = preview->textureIds[0];
+                }
+            }
+
             if (logThis) DEBUG_LOG("  [" << fileIndex << "] AddImage (texture=" << textureId << ")...");
             drawList->AddImage(toImTextureID(textureId), thumbPos,
                               ImVec2(thumbPos.x + m_thumbnailSize, thumbPos.y + m_thumbnailSize));
@@ -483,6 +514,67 @@ void FileView::renderGridView(std::vector<FileGroup>& groups, ThumbnailCache& ca
         } else {
             col = 0;
         }
+    };
+
+    col = 0;
+
+    if (m_groupByFolder && !folderGroups.empty()) {
+        // Render files grouped by folder
+        for (const auto& folder : folderOrder) {
+            const auto& filesInFolder = folderGroups[folder];
+
+            // Folder header
+            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.25f, 0.3f, 0.8f));
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.3f, 0.35f, 0.4f, 0.9f));
+
+            // Use last two components of path for display
+            std::string folderDisplay;
+            auto pathIt = folder.end();
+            if (pathIt != folder.begin()) {
+                --pathIt;
+                folderDisplay = pathIt->string();
+                if (pathIt != folder.begin()) {
+                    --pathIt;
+                    folderDisplay = pathIt->string() + "/" + folderDisplay;
+                }
+            } else {
+                folderDisplay = folder.string();
+            }
+
+            char headerLabel[512];
+            snprintf(headerLabel, sizeof(headerLabel), "%s (%zu files)###%s",
+                     folderDisplay.c_str(), filesInFolder.size(), folder.string().c_str());
+
+            bool folderOpen = ImGui::CollapsingHeader(headerLabel, ImGuiTreeNodeFlags_DefaultOpen);
+
+            ImGui::PopStyleColor(2);
+
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", folder.string().c_str());
+            }
+
+            if (folderOpen) {
+                col = 0;
+                ImGui::Indent(8.0f);
+
+                for (const BlendFileInfo* filePtr : filesInFolder) {
+                    renderFileCard(filePtr, col, columns);
+                }
+
+                // End row if we're mid-row
+                if (col != 0) {
+                    col = 0;
+                }
+
+                ImGui::Unindent(8.0f);
+                ImGui::Spacing();
+            }
+        }
+    } else {
+        // Render files without folder grouping
+        for (const BlendFileInfo* filePtr : filesToDisplay) {
+            renderFileCard(filePtr, col, columns);
+        }
     }
 
     // Log total loop time
@@ -492,6 +584,16 @@ void FileView::renderGridView(std::vector<FileGroup>& groups, ThumbnailCache& ca
     }
 
     // Legacy expanded versions code (for tree-style expansion, not used with Show All)
+    // Skip if using folder grouping
+    if (m_groupByFolder) {
+        // Log grid view total time for first 10 frames
+        auto gridTotalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - gridStart).count();
+        if (gridTotalMs > 50 || m_currentFrame <= 10) {
+            DEBUG_LOG("FileView::renderGridView frame " << m_currentFrame << " complete: " << gridTotalMs << "ms (" << filesToDisplay.size() << " files displayed)");
+        }
+        return;
+    }
+
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     for (auto& group : groups) {
         bool hasVersions = !group.versions.empty();
