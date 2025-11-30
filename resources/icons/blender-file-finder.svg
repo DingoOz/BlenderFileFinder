@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <!-- Gradient for the background -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2d2d2d"/>
+      <stop offset="100%" style="stop-color:#1a1a1a"/>
+    </linearGradient>
+    <!-- Blender orange gradient -->
+    <linearGradient id="orangeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FF8C00"/>
+      <stop offset="100%" style="stop-color:#EA7600"/>
+    </linearGradient>
+    <!-- Thumbnail gradient -->
+    <linearGradient id="thumbGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#404040"/>
+      <stop offset="100%" style="stop-color:#2a2a2a"/>
+    </linearGradient>
+    <!-- Glass gradient for magnifier -->
+    <radialGradient id="glassGrad" cx="30%" cy="30%" r="70%">
+      <stop offset="0%" style="stop-color:#6a9fff;stop-opacity:0.3"/>
+      <stop offset="100%" style="stop-color:#2a5599;stop-opacity:0.1"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background rounded square -->
+  <rect x="16" y="16" width="480" height="480" rx="80" ry="80" fill="url(#bgGrad)"/>
+
+  <!-- Subtle inner border -->
+  <rect x="24" y="24" width="464" height="464" rx="72" ry="72" fill="none" stroke="#3a3a3a" stroke-width="2"/>
+
+  <!-- Grid of thumbnail placeholders (3x3 but we show 6 visible) -->
+  <!-- Row 1 -->
+  <rect x="60" y="70" width="115" height="95" rx="12" fill="url(#thumbGrad)" stroke="#4a4a4a" stroke-width="2"/>
+  <rect x="60" y="78" width="115" height="6" rx="3" fill="url(#orangeGrad)" opacity="0.9"/>
+
+  <rect x="195" y="70" width="115" height="95" rx="12" fill="url(#thumbGrad)" stroke="#4a4a4a" stroke-width="2"/>
+  <rect x="195" y="78" width="115" height="6" rx="3" fill="url(#orangeGrad)" opacity="0.9"/>
+
+  <rect x="330" y="70" width="115" height="95" rx="12" fill="url(#thumbGrad)" stroke="#4a4a4a" stroke-width="2"/>
+  <rect x="330" y="78" width="115" height="6" rx="3" fill="url(#orangeGrad)" opacity="0.9"/>
+
+  <!-- Row 2 -->
+  <rect x="60" y="185" width="115" height="95" rx="12" fill="url(#thumbGrad)" stroke="#4a4a4a" stroke-width="2"/>
+  <rect x="60" y="193" width="115" height="6" rx="3" fill="url(#orangeGrad)" opacity="0.9"/>
+
+  <rect x="195" y="185" width="115" height="95" rx="12" fill="url(#thumbGrad)" stroke="#4a4a4a" stroke-width="2"/>
+  <rect x="195" y="193" width="115" height="6" rx="3" fill="url(#orangeGrad)" opacity="0.9"/>
+
+  <rect x="330" y="185" width="115" height="95" rx="12" fill="url(#thumbGrad)" stroke="#4a4a4a" stroke-width="2"/>
+  <rect x="330" y="193" width="115" height="6" rx="3" fill="url(#orangeGrad)" opacity="0.9"/>
+
+  <!-- Row 3 (partially visible, fading behind magnifier) -->
+  <rect x="60" y="300" width="115" height="95" rx="12" fill="url(#thumbGrad)" stroke="#4a4a4a" stroke-width="2" opacity="0.6"/>
+  <rect x="60" y="308" width="115" height="6" rx="3" fill="url(#orangeGrad)" opacity="0.5"/>
+
+  <rect x="195" y="300" width="115" height="95" rx="12" fill="url(#thumbGrad)" stroke="#4a4a4a" stroke-width="2" opacity="0.4"/>
+
+  <!-- Small 3D cube icons inside some thumbnails to indicate Blender files -->
+  <!-- Cube in first thumbnail -->
+  <g transform="translate(95, 115)">
+    <polygon points="0,-20 23,-8 23,15 0,27 -23,15 -23,-8" fill="#555" stroke="#666" stroke-width="1"/>
+    <polygon points="0,-20 23,-8 0,4 -23,-8" fill="#EA7600" opacity="0.8"/>
+    <polygon points="0,4 23,-8 23,15 0,27" fill="#c56200" opacity="0.8"/>
+    <polygon points="0,4 -23,-8 -23,15 0,27" fill="#a85500" opacity="0.8"/>
+  </g>
+
+  <!-- Cube in fourth thumbnail -->
+  <g transform="translate(230, 230)">
+    <polygon points="0,-20 23,-8 23,15 0,27 -23,15 -23,-8" fill="#555" stroke="#666" stroke-width="1"/>
+    <polygon points="0,-20 23,-8 0,4 -23,-8" fill="#EA7600" opacity="0.8"/>
+    <polygon points="0,4 23,-8 23,15 0,27" fill="#c56200" opacity="0.8"/>
+    <polygon points="0,4 -23,-8 -23,15 0,27" fill="#a85500" opacity="0.8"/>
+  </g>
+
+  <!-- Magnifying glass -->
+  <g transform="translate(340, 340)">
+    <!-- Glass circle with subtle fill -->
+    <circle cx="0" cy="0" r="85" fill="url(#glassGrad)" stroke="url(#orangeGrad)" stroke-width="14"/>
+
+    <!-- Inner highlight ring -->
+    <circle cx="0" cy="0" r="70" fill="none" stroke="#ffffff" stroke-width="2" opacity="0.15"/>
+
+    <!-- Handle -->
+    <rect x="55" y="55" width="95" height="32" rx="16" transform="rotate(45, 55, 55)" fill="url(#orangeGrad)"/>
+    <rect x="60" y="62" width="85" height="18" rx="9" transform="rotate(45, 55, 55)" fill="#c56200"/>
+
+    <!-- Shine on glass -->
+    <ellipse cx="-25" cy="-30" rx="30" ry="20" fill="#ffffff" opacity="0.12" transform="rotate(-30, -25, -30)"/>
+  </g>
+
+  <!-- Subtle .blend text indicator -->
+  <text x="405" y="55" font-family="monospace" font-size="28" font-weight="bold" fill="#EA7600" opacity="0.7">.blend</text>
+</svg>

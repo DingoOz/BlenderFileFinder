@@ -92,6 +92,7 @@ private:
     void renderUserGuide();
     void renderStatisticsDialog();
     void renderBulkTagDialog();
+    void renderPreloadDialog();
     /// @}
 
     /// @name Actions
@@ -105,6 +106,7 @@ private:
     void openContainingFolder(const std::filesystem::path& path);
     void checkForNewFiles();
     void startPreviewGeneration(bool forceRegenerate = false);
+    void setWindowIcon();
     /// @}
 
     GLFWwindow* m_window = nullptr;             ///< GLFW window handle
@@ -178,6 +180,17 @@ private:
     int m_bulkTagSelectedLocation = -1;
     char m_bulkTagName[128] = {0};
     std::vector<BlendFileInfo> m_bulkTagPreviewFiles;
+    /// @}
+
+    /// @name Preview Preloading
+    /// @{
+    bool m_showPreloadDialog = false;
+    bool m_isPreloadingPreviews = false;
+    bool m_preloadCancelRequested = false;
+    size_t m_preloadCurrentIndex = 0;
+    size_t m_preloadTotalCount = 0;
+    std::vector<std::filesystem::path> m_preloadPaths;
+    std::string m_preloadCurrentFile;
     /// @}
 
     /// @name Background Loading

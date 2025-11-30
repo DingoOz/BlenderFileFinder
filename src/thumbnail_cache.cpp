@@ -5,12 +5,19 @@
 #include <GL/glext.h>
 #include <cstring>
 #include <chrono>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
 
 namespace BlenderFileFinder {
 
 ThumbnailCache::ThumbnailCache(size_t maxCacheSize)
     : m_maxCacheSize(maxCacheSize) {
     DEBUG_LOG("ThumbnailCache constructor, maxSize=" << maxCacheSize);
+
+    // Initialize disk cache directory
+    initDiskCache();
+
     createPlaceholderTexture();
     DEBUG_LOG("Placeholder texture created: " << m_placeholderTexture);
 
@@ -140,6 +147,7 @@ void ThumbnailCache::requestThumbnail(const std::filesystem::path& path) {
     m_loadingSet[key] = true;
     if (logThis) DEBUG_LOG("requestThumbnail[" << reqCallCount << "] pushing to queue...");
     m_loadQueue.push(path);
+    m_totalRequested++;
     if (logThis) DEBUG_LOG("requestThumbnail[" << reqCallCount << "] done");
 }
 
@@ -170,25 +178,48 @@ void ThumbnailCache::loadThread() {
             continue;
         }
 
-        // Parse file and extract thumbnail - this runs in background thread
-        auto parseStart = std::chrono::steady_clock::now();
-        auto info = BlendParser::parseQuick(pathToLoad);
-        auto parseMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - parseStart).count();
-        // Log all parses that take > 50ms (could indicate I/O issues)
-        if (parseMs > 50) {
-            DEBUG_LOG("Slow parseQuick: " << pathToLoad.filename() << " took " << parseMs << "ms (thread)");
-        }
-
         LoadRequest request;
         request.path = pathToLoad;
 
-        if (info && info->thumbnail) {
-            request.thumbnail = std::move(*info->thumbnail);
+        // First, try loading from disk cache (much faster than parsing .blend)
+        auto cachedThumb = loadFromDiskCache(pathToLoad);
+
+        if (cachedThumb) {
+            // Cache hit - use cached thumbnail (may be empty marker for files without thumbnails)
+            request.thumbnail = std::move(*cachedThumb);
         } else {
-            // No thumbnail in file - create an empty thumbnail marker
-            // This will cause the placeholder to be cached for this file
-            request.thumbnail.width = 0;
-            request.thumbnail.height = 0;
+            // Cache miss - check if file is accessible first
+            std::error_code ec;
+            bool fileExists = std::filesystem::exists(pathToLoad, ec);
+
+            if (!fileExists || ec) {
+                // File doesn't exist or is inaccessible - don't keep retrying
+                request.thumbnail.width = 0;
+                request.thumbnail.height = 0;
+                // Save empty marker so we don't retry this file
+                saveToDiskCache(pathToLoad, request.thumbnail);
+            } else {
+                // Parse file and extract thumbnail
+                auto parseStart = std::chrono::steady_clock::now();
+                auto info = BlendParser::parseQuick(pathToLoad);
+                auto parseMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - parseStart).count();
+
+                // Log all parses that take > 50ms (could indicate I/O issues)
+                if (parseMs > 50) {
+                    DEBUG_LOG("Slow parseQuick: " << pathToLoad.filename() << " took " << parseMs << "ms (thread)");
+                }
+
+                if (info && info->thumbnail) {
+                    request.thumbnail = std::move(*info->thumbnail);
+                } else {
+                    // No thumbnail in file - create an empty thumbnail marker
+                    request.thumbnail.width = 0;
+                    request.thumbnail.height = 0;
+                }
+                // Save to disk cache (including empty markers for files without thumbnails)
+                saveToDiskCache(pathToLoad, request.thumbnail);
+            }
         }
 
         std::lock_guard<std::mutex> lock(m_loadedMutex);
@@ -262,6 +293,7 @@ void ThumbnailCache::processLoadedThumbnails() {
 
         m_cacheList.push_front(entry);
         m_cacheMap[key] = m_cacheList.begin();
+        m_totalLoaded++;
 
         // Remove from loading set
         {
@@ -308,6 +340,144 @@ void ThumbnailCache::clear() {
         m_loadQueue.pop();
     }
     m_loadingSet.clear();
+
+    // Reset progress counters
+    m_totalRequested = 0;
+    m_totalLoaded = 0;
+}
+
+std::pair<size_t, size_t> ThumbnailCache::getLoadingProgress() const {
+    // Return current pending count, not cumulative session totals
+    // This gives accurate progress when files are evicted and re-requested
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(m_queueMutex));
+    size_t pending = m_loadingSet.size();  // Files from request until fully cached
+
+    // m_loadingSet already includes files in m_loadedQueue (they're removed together)
+    // So just return pending count as total, with 0 "completed" since we can't track batch progress
+    return {0, pending};
+}
+
+bool ThumbnailCache::isLoadingThumbnails() const {
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(m_queueMutex));
+    return !m_loadingSet.empty();
+}
+
+// ============================================================================
+// Disk Cache Implementation
+// ============================================================================
+
+void ThumbnailCache::initDiskCache() {
+    const char* home = std::getenv("HOME");
+    if (home) {
+        m_diskCacheDir = std::filesystem::path(home) / ".cache" / "BlenderFileFinder" / "thumbnails";
+    } else {
+        m_diskCacheDir = "/tmp/BlenderFileFinder/thumbnails";
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(m_diskCacheDir, ec);
+    if (ec) {
+        DEBUG_LOG("Failed to create thumbnail cache directory: " << ec.message());
+    } else {
+        DEBUG_LOG("Thumbnail disk cache: " << m_diskCacheDir);
+    }
+}
+
+std::filesystem::path ThumbnailCache::getDiskCachePath(const std::filesystem::path& blendFile) const {
+    // Create a unique filename based on path hash and modification time
+    // This ensures cache invalidation when the source file changes
+    std::error_code ec;
+    auto modTime = std::filesystem::last_write_time(blendFile, ec);
+    if (ec) {
+        // File doesn't exist or can't read - use path hash only
+        std::stringstream ss;
+        ss << std::hex << std::setfill('0') << std::setw(16)
+           << std::hash<std::string>{}(blendFile.string()) << ".thumb";
+        return m_diskCacheDir / ss.str();
+    }
+
+    auto modTimeCount = modTime.time_since_epoch().count();
+    std::stringstream ss;
+    ss << std::hex << std::setfill('0') << std::setw(16)
+       << std::hash<std::string>{}(blendFile.string())
+       << "_" << std::setw(16) << modTimeCount << ".thumb";
+    return m_diskCacheDir / ss.str();
+}
+
+std::optional<BlendThumbnail> ThumbnailCache::loadFromDiskCache(const std::filesystem::path& blendFile) {
+    std::filesystem::path cachePath = getDiskCachePath(blendFile);
+
+    std::ifstream file(cachePath, std::ios::binary);
+    if (!file) {
+        return std::nullopt;  // Cache miss
+    }
+
+    // Read and verify magic bytes
+    char magic[4];
+    file.read(magic, 4);
+    if (!file || std::memcmp(magic, "BFFT", 4) != 0) {
+        return std::nullopt;  // Invalid cache file
+    }
+
+    // Read version
+    uint32_t version;
+    file.read(reinterpret_cast<char*>(&version), sizeof(version));
+    if (!file || version != 1) {
+        return std::nullopt;  // Unsupported version
+    }
+
+    // Read dimensions
+    uint32_t width, height;
+    file.read(reinterpret_cast<char*>(&width), sizeof(width));
+    file.read(reinterpret_cast<char*>(&height), sizeof(height));
+    if (!file || width > 4096 || height > 4096) {
+        return std::nullopt;  // Invalid dimensions
+    }
+
+    // Handle "no thumbnail" marker (width=0, height=0)
+    BlendThumbnail thumb;
+    thumb.width = static_cast<int>(width);
+    thumb.height = static_cast<int>(height);
+
+    if (width > 0 && height > 0) {
+        // Read pixel data
+        thumb.pixels.resize(width * height * 4);
+        file.read(reinterpret_cast<char*>(thumb.pixels.data()), thumb.pixels.size());
+
+        if (!file) {
+            return std::nullopt;  // Incomplete read
+        }
+    }
+    // For empty thumbnails (no pixels), just return the empty struct
+
+    return thumb;
+}
+
+void ThumbnailCache::saveToDiskCache(const std::filesystem::path& blendFile, const BlendThumbnail& thumbnail) {
+    std::filesystem::path cachePath = getDiskCachePath(blendFile);
+
+    std::ofstream file(cachePath, std::ios::binary);
+    if (!file) {
+        return;  // Can't write cache
+    }
+
+    // Write magic bytes
+    file.write("BFFT", 4);
+
+    // Write version
+    uint32_t version = 1;
+    file.write(reinterpret_cast<const char*>(&version), sizeof(version));
+
+    // Write dimensions (0x0 is valid as a "no thumbnail" marker)
+    uint32_t width = static_cast<uint32_t>(std::max(0, thumbnail.width));
+    uint32_t height = static_cast<uint32_t>(std::max(0, thumbnail.height));
+    file.write(reinterpret_cast<const char*>(&width), sizeof(width));
+    file.write(reinterpret_cast<const char*>(&height), sizeof(height));
+
+    // Write pixel data (only if we have actual pixels)
+    if (width > 0 && height > 0 && !thumbnail.pixels.empty()) {
+        file.write(reinterpret_cast<const char*>(thumbnail.pixels.data()), thumbnail.pixels.size());
+    }
 }
 
 } // namespace BlenderFileFinder

@@ -1,6 +1,8 @@
 /**
  * @file thumbnail_cache.hpp
  * @brief LRU cache for .blend file thumbnail textures with async loading.
+ *
+ * Thumbnails are cached to disk for fast loading on subsequent runs.
  */
 
 #pragma once
@@ -13,6 +15,7 @@
 #include <queue>
 #include <thread>
 #include <unordered_map>
+#include <optional>
 
 namespace BlenderFileFinder {
 
@@ -102,6 +105,18 @@ public:
      */
     bool isLoading(const std::filesystem::path& path) const;
 
+    /**
+     * @brief Get the number of thumbnails pending or being loaded.
+     * @return Pair of (pending in queue, total requested)
+     */
+    std::pair<size_t, size_t> getLoadingProgress() const;
+
+    /**
+     * @brief Check if thumbnails are currently being loaded.
+     * @return true if there are pending thumbnails
+     */
+    bool isLoadingThumbnails() const;
+
 private:
     /**
      * @brief Cache entry storing a texture and its source path.
@@ -123,6 +138,12 @@ private:
     uint32_t createTexture(const BlendThumbnail& thumbnail);
     void createPlaceholderTexture();
     void evictOldest();
+
+    // Disk cache methods
+    void initDiskCache();
+    std::filesystem::path getDiskCachePath(const std::filesystem::path& blendFile) const;
+    std::optional<BlendThumbnail> loadFromDiskCache(const std::filesystem::path& blendFile);
+    void saveToDiskCache(const std::filesystem::path& blendFile, const BlendThumbnail& thumbnail);
 
     size_t m_maxCacheSize;              ///< Maximum cache capacity
 
@@ -153,7 +174,18 @@ private:
     static constexpr int NUM_LOADER_THREADS = 4; ///< Number of loader threads
     /// @}
 
+    /// @name Progress Tracking
+    /// @{
+    std::atomic<size_t> m_totalRequested{0};    ///< Total thumbnails requested this session
+    std::atomic<size_t> m_totalLoaded{0};       ///< Total thumbnails loaded this session
+    /// @}
+
     uint32_t m_placeholderTexture = 0;          ///< Placeholder texture ID
+
+    /// @name Disk Cache
+    /// @{
+    std::filesystem::path m_diskCacheDir;       ///< Directory for cached thumbnails
+    /// @}
 };
 
 } // namespace BlenderFileFinder

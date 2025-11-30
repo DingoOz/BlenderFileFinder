@@ -18,6 +18,8 @@
 #include <GL/gl.h>
 #include <GLFW/glfw3.h>
 
+#include "stb_image.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -57,6 +59,9 @@ bool App::init() {
         return false;
     }
     DEBUG_LOG("Window created");
+
+    // Set window icon
+    setWindowIcon();
 
     glfwMakeContextCurrent(m_window);
     glfwSwapInterval(1);
@@ -256,6 +261,26 @@ void App::run() {
 
         m_previewCache->processLoadedPreviews();
         auto previewProcMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - processStart).count() - thumbProcMs;
+
+        // Process preview preloading (a few per frame to keep UI responsive)
+        if (m_isPreloadingPreviews && m_preloadCurrentIndex < m_preloadPaths.size() && !m_preloadCancelRequested) {
+            // Load up to 3 previews per frame
+            for (int i = 0; i < 3 && m_preloadCurrentIndex < m_preloadPaths.size(); ++i, ++m_preloadCurrentIndex) {
+                m_preloadCurrentFile = m_preloadPaths[m_preloadCurrentIndex].filename().string();
+                m_previewCache->loadPreview(m_preloadPaths[m_preloadCurrentIndex]);
+            }
+
+            // Check if done
+            if (m_preloadCurrentIndex >= m_preloadPaths.size()) {
+                m_isPreloadingPreviews = false;
+                m_showPreloadDialog = false;
+                DEBUG_LOG("Preview preload complete: " << m_preloadTotalCount << " files");
+            }
+        } else if (m_preloadCancelRequested && m_isPreloadingPreviews) {
+            m_isPreloadingPreviews = false;
+            m_showPreloadDialog = false;
+            DEBUG_LOG("Preview preload cancelled at " << m_preloadCurrentIndex << "/" << m_preloadTotalCount);
+        }
 
         if (m_frameCount <= 10 || thumbProcMs > 10 || previewProcMs > 10) {
             DEBUG_LOG("Frame " << m_frameCount << " process: thumbs=" << thumbProcMs << "ms previews=" << previewProcMs << "ms");
@@ -502,6 +527,7 @@ void App::renderUI() {
     renderUserGuide();
     renderStatisticsDialog();
     renderBulkTagDialog();
+    renderPreloadDialog();
 
     auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - uiStart).count();
 
@@ -530,6 +556,30 @@ void App::renderMenuBar() {
             }
             if (ImGui::MenuItem("Regenerate All Previews...", nullptr, false, !m_previewCache->isGenerating())) {
                 startPreviewGeneration(true);
+            }
+            if (ImGui::MenuItem("Load All Preview Thumbnails...", nullptr, false, !m_isPreloadingPreviews)) {
+                // Build list of all files with existing previews
+                m_preloadPaths.clear();
+                for (const auto& group : m_fileGroups) {
+                    if (m_previewCache->hasPreview(group.primaryFile.path)) {
+                        m_preloadPaths.push_back(group.primaryFile.path);
+                    }
+                    for (const auto& version : group.versions) {
+                        if (m_previewCache->hasPreview(version.path)) {
+                            m_preloadPaths.push_back(version.path);
+                        }
+                    }
+                }
+                m_preloadCurrentIndex = 0;
+                m_preloadTotalCount = m_preloadPaths.size();
+                m_preloadCancelRequested = false;
+                m_preloadCurrentFile.clear();
+
+                if (m_preloadTotalCount > 0) {
+                    m_isPreloadingPreviews = true;
+                    m_showPreloadDialog = true;
+                    DEBUG_LOG("Starting preview preload for " << m_preloadTotalCount << " files");
+                }
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Cleanup Missing Files")) {
@@ -894,7 +944,8 @@ void App::renderStatusBar() {
     ImGui::Separator();
 
     // Determine if we're busy with any activity
-    bool isBusy = m_isLoading || m_isScanning || m_previewCache->isGenerating() || m_needsInitialLoad;
+    bool isLoadingThumbnails = m_thumbnailCache->isLoadingThumbnails();
+    bool isBusy = m_isLoading || m_isScanning || m_previewCache->isGenerating() || m_needsInitialLoad || m_isPreloadingPreviews || isLoadingThumbnails;
 
     // Draw status indicator (colored circle)
     ImDrawList* drawList = ImGui::GetWindowDrawList();
@@ -932,6 +983,13 @@ void App::renderStatusBar() {
         } else if (m_previewCache->isGenerating()) {
             auto [current, total] = m_previewCache->getProgress();
             ImGui::TextDisabled("(Generating previews %d/%d...)", current + 1, total);
+        } else if (m_isPreloadingPreviews) {
+            ImGui::TextDisabled("(Loading preview thumbnails %zu/%zu...)",
+                               m_preloadCurrentIndex, m_preloadTotalCount);
+        } else if (isLoadingThumbnails) {
+            auto [completed, total] = m_thumbnailCache->getLoadingProgress();
+            size_t remaining = total - completed;
+            ImGui::TextDisabled("(Loading %zu thumbnail%s...)", remaining, remaining == 1 ? "" : "s");
         }
         ImGui::SameLine();
         ImGui::Text(" | ");
@@ -1685,6 +1743,100 @@ void App::renderBulkTagDialog() {
         }
     }
     ImGui::End();
+}
+
+void App::renderPreloadDialog() {
+    if (!m_showPreloadDialog && !m_isPreloadingPreviews) {
+        return;
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(450, 150), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+
+    if (ImGui::Begin("Loading Preview Thumbnails", &m_showPreloadDialog,
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize)) {
+
+        if (m_isPreloadingPreviews) {
+            float progress = m_preloadTotalCount > 0 ?
+                static_cast<float>(m_preloadCurrentIndex) / m_preloadTotalCount : 0.0f;
+
+            ImGui::Text("Loading preview %zu of %zu...",
+                       m_preloadCurrentIndex + 1, m_preloadTotalCount);
+            ImGui::ProgressBar(progress, ImVec2(-1, 0));
+
+            if (!m_preloadCurrentFile.empty()) {
+                ImGui::TextDisabled("Current: %s", m_preloadCurrentFile.c_str());
+            }
+
+            ImGui::Spacing();
+            ImGui::TextWrapped("Loading animated preview thumbnails into memory for faster browsing.");
+
+            ImGui::Spacing();
+            if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+                m_preloadCancelRequested = true;
+            }
+        } else {
+            ImGui::Text("Preview loading complete!");
+            ImGui::Text("Loaded %zu preview thumbnails.", m_preloadTotalCount);
+
+            ImGui::Spacing();
+            if (ImGui::Button("Close", ImVec2(120, 0))) {
+                m_showPreloadDialog = false;
+            }
+        }
+    }
+    ImGui::End();
+
+    // Handle closing dialog while not loading
+    if (!m_isPreloadingPreviews && !m_showPreloadDialog) {
+        m_showPreloadDialog = false;
+    }
+}
+
+void App::setWindowIcon() {
+    // Search for icon in common locations
+    std::vector<std::filesystem::path> searchPaths = {
+        // Installed location
+        std::filesystem::path(std::getenv("HOME") ? std::getenv("HOME") : "") /
+            ".local/share/icons/hicolor/256x256/apps/blender-file-finder.png",
+        // Development location (relative to executable)
+        "../resources/icons/blender-file-finder-256.png",
+        "resources/icons/blender-file-finder-256.png",
+        // Development location (relative to source)
+        std::filesystem::path(__FILE__).parent_path().parent_path() /
+            "resources/icons/blender-file-finder-256.png",
+    };
+
+    std::string iconPath;
+    for (const auto& path : searchPaths) {
+        if (std::filesystem::exists(path)) {
+            iconPath = path.string();
+            break;
+        }
+    }
+
+    if (iconPath.empty()) {
+        DEBUG_LOG("Window icon not found");
+        return;
+    }
+
+    // Load icon using stb_image
+    int width, height, channels;
+    unsigned char* pixels = stbi_load(iconPath.c_str(), &width, &height, &channels, 4);
+    if (!pixels) {
+        DEBUG_LOG("Failed to load window icon: " << iconPath);
+        return;
+    }
+
+    // Set window icon
+    GLFWimage icon;
+    icon.width = width;
+    icon.height = height;
+    icon.pixels = pixels;
+    glfwSetWindowIcon(m_window, 1, &icon);
+
+    stbi_image_free(pixels);
+    DEBUG_LOG("Window icon set: " << iconPath);
 }
 
 } // namespace BlenderFileFinder
