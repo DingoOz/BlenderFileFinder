@@ -55,6 +55,25 @@ cmake -DCMAKE_BUILD_TYPE=Release ..
 make -j$(nproc)
 ```
 
+## Installation
+
+After building, you can install the application to your system:
+
+```bash
+./install-desktop.sh
+```
+
+This will:
+- Copy the binary to `~/.local/bin/`
+- Install application icons
+- Add a desktop entry so it appears in your application menu
+
+To uninstall:
+
+```bash
+./uninstall-desktop.sh
+```
+
 ## Running
 
 ```bash
