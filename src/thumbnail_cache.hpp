@@ -186,6 +186,13 @@ private:
     /// @{
     std::filesystem::path m_diskCacheDir;       ///< Directory for cached thumbnails
     /// @}
+
+    /// @name Anti-Thrashing
+    /// Recently loaded items that shouldn't be re-requested immediately after eviction
+    /// @{
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> m_recentlyLoaded;
+    static constexpr int COOLDOWN_SECONDS = 5;  ///< Don't re-request evicted items for this long
+    /// @}
 };
 
 } // namespace BlenderFileFinder

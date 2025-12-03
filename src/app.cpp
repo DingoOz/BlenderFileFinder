@@ -157,7 +157,7 @@ bool App::init() {
     DEBUG_LOG("Creating Scanner");
     m_scanner = std::make_unique<Scanner>();
     DEBUG_LOG("Creating ThumbnailCache");
-    m_thumbnailCache = std::make_unique<ThumbnailCache>(500);
+    m_thumbnailCache = std::make_unique<ThumbnailCache>(2000);  // Increased to reduce eviction thrashing
     DEBUG_LOG("Creating VersionGrouper");
     m_versionGrouper = std::make_unique<VersionGrouper>();
     DEBUG_LOG("Creating Database");

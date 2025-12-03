@@ -449,11 +449,32 @@ void FileView::renderGridView(std::vector<FileGroup>& groups, ThumbnailCache& ca
         }
 
         if (logThis) DEBUG_LOG("  [" << fileIndex << "] Drawing filename...");
-        // Filename (truncated) - draw below thumbnail
+        // Filename (truncated to fit available width) - draw below thumbnail
         std::string displayName = file.filename;
-        if (displayName.length() > 18) {
-            displayName = displayName.substr(0, 15) + "...";
+        float availableWidth = cardWidth - 16.0f;  // 8px padding on each side
+        ImVec2 textSize = ImGui::CalcTextSize(displayName.c_str());
+
+        if (textSize.x > availableWidth) {
+            // Binary search for the right truncation point
+            const char* ellipsis = "...";
+            float ellipsisWidth = ImGui::CalcTextSize(ellipsis).x;
+            float targetWidth = availableWidth - ellipsisWidth;
+
+            // Start from the end and work backwards to find where text fits
+            size_t len = displayName.length();
+            while (len > 0) {
+                std::string testStr = displayName.substr(0, len);
+                if (ImGui::CalcTextSize(testStr.c_str()).x <= targetWidth) {
+                    displayName = testStr + ellipsis;
+                    break;
+                }
+                len--;
+            }
+            if (len == 0) {
+                displayName = ellipsis;
+            }
         }
+
         ImVec2 textPos = ImVec2(cardStart.x + 8.0f, cardStart.y + m_thumbnailSize + 12.0f);
         drawList->AddText(textPos, IM_COL32(230, 230, 230, 255), displayName.c_str());
 
@@ -648,9 +669,28 @@ void FileView::renderGridView(std::vector<FileGroup>& groups, ThumbnailCache& ca
                     ImVec2(vThumbPos.x + smallThumbSize, vThumbPos.y + smallThumbSize));
 
                 std::string versionName = version.filename;
-                if (versionName.length() > 14) {
-                    versionName = versionName.substr(0, 11) + "...";
+                float vAvailableWidth = smallCardWidth - 12.0f;  // 6px padding on each side
+                ImVec2 vTextSize = ImGui::CalcTextSize(versionName.c_str());
+
+                if (vTextSize.x > vAvailableWidth) {
+                    const char* ellipsis = "...";
+                    float ellipsisWidth = ImGui::CalcTextSize(ellipsis).x;
+                    float targetWidth = vAvailableWidth - ellipsisWidth;
+
+                    size_t len = versionName.length();
+                    while (len > 0) {
+                        std::string testStr = versionName.substr(0, len);
+                        if (ImGui::CalcTextSize(testStr.c_str()).x <= targetWidth) {
+                            versionName = testStr + ellipsis;
+                            break;
+                        }
+                        len--;
+                    }
+                    if (len == 0) {
+                        versionName = ellipsis;
+                    }
                 }
+
                 ImVec2 vTextPos = ImVec2(vCardStart.x + 6.0f, vCardStart.y + smallThumbSize + 10.0f);
                 drawList->AddText(vTextPos, IM_COL32(200, 200, 200, 255), versionName.c_str());
 

@@ -119,36 +119,31 @@ uint32_t ThumbnailCache::getTexture(const std::filesystem::path& path) {
 }
 
 void ThumbnailCache::requestThumbnail(const std::filesystem::path& path) {
-    static int reqCallCount = 0;
-    bool logThis = (reqCallCount < 5);
-    reqCallCount++;
-
-    if (logThis) DEBUG_LOG("requestThumbnail[" << reqCallCount << "] start");
     std::string key = path.string();
-    if (logThis) DEBUG_LOG("requestThumbnail[" << reqCallCount << "] got key, acquiring mutex...");
 
     std::lock_guard<std::mutex> lock(m_queueMutex);
-    if (logThis) DEBUG_LOG("requestThumbnail[" << reqCallCount << "] mutex acquired");
 
     // Skip if already in cache or loading
     if (m_cacheMap.count(key) || m_loadingSet.count(key)) {
-        if (logThis) DEBUG_LOG("requestThumbnail[" << reqCallCount << "] already loading, skip");
         return;
     }
 
-    // Log first few thumbnail requests
-    static int requestCount = 0;
-    if (requestCount < 3) {
-        DEBUG_LOG("Thumbnail requested: " << path.filename());
-        requestCount++;
+    // Anti-thrashing: don't re-request items that were recently loaded
+    // This prevents the eviction→re-request→eviction loop
+    auto recentIt = m_recentlyLoaded.find(key);
+    if (recentIt != m_recentlyLoaded.end()) {
+        auto elapsed = std::chrono::steady_clock::now() - recentIt->second;
+        if (elapsed < std::chrono::seconds(COOLDOWN_SECONDS)) {
+            // Still in cooldown, use placeholder instead of re-requesting
+            return;
+        }
+        // Cooldown expired, remove from recently loaded
+        m_recentlyLoaded.erase(recentIt);
     }
 
-    if (logThis) DEBUG_LOG("requestThumbnail[" << reqCallCount << "] adding to loadingSet...");
     m_loadingSet[key] = true;
-    if (logThis) DEBUG_LOG("requestThumbnail[" << reqCallCount << "] pushing to queue...");
     m_loadQueue.push(path);
     m_totalRequested++;
-    if (logThis) DEBUG_LOG("requestThumbnail[" << reqCallCount << "] done");
 }
 
 bool ThumbnailCache::isLoading(const std::filesystem::path& path) const {
@@ -295,10 +290,23 @@ void ThumbnailCache::processLoadedThumbnails() {
         m_cacheMap[key] = m_cacheList.begin();
         m_totalLoaded++;
 
-        // Remove from loading set
+        // Remove from loading set and mark as recently loaded (anti-thrashing)
         {
             std::lock_guard<std::mutex> queueLock(m_queueMutex);
             m_loadingSet.erase(key);
+            m_recentlyLoaded[key] = std::chrono::steady_clock::now();
+
+            // Periodically clean up old entries from recentlyLoaded (every 100 items)
+            if (m_recentlyLoaded.size() > 1000 && (processedCount % 100) == 0) {
+                auto now = std::chrono::steady_clock::now();
+                for (auto it = m_recentlyLoaded.begin(); it != m_recentlyLoaded.end(); ) {
+                    if (now - it->second > std::chrono::seconds(COOLDOWN_SECONDS * 2)) {
+                        it = m_recentlyLoaded.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            }
         }
 
         m_loadedQueue.pop();
@@ -340,6 +348,7 @@ void ThumbnailCache::clear() {
         m_loadQueue.pop();
     }
     m_loadingSet.clear();
+    m_recentlyLoaded.clear();
 
     // Reset progress counters
     m_totalRequested = 0;
@@ -384,23 +393,12 @@ void ThumbnailCache::initDiskCache() {
 }
 
 std::filesystem::path ThumbnailCache::getDiskCachePath(const std::filesystem::path& blendFile) const {
-    // Create a unique filename based on path hash and modification time
-    // This ensures cache invalidation when the source file changes
-    std::error_code ec;
-    auto modTime = std::filesystem::last_write_time(blendFile, ec);
-    if (ec) {
-        // File doesn't exist or can't read - use path hash only
-        std::stringstream ss;
-        ss << std::hex << std::setfill('0') << std::setw(16)
-           << std::hash<std::string>{}(blendFile.string()) << ".thumb";
-        return m_diskCacheDir / ss.str();
-    }
-
-    auto modTimeCount = modTime.time_since_epoch().count();
+    // Use ONLY the path hash for the filename - this ensures consistency
+    // even when filesystem operations fail intermittently (network files)
+    // Cache invalidation is handled by checking mod time when loading
     std::stringstream ss;
     ss << std::hex << std::setfill('0') << std::setw(16)
-       << std::hash<std::string>{}(blendFile.string())
-       << "_" << std::setw(16) << modTimeCount << ".thumb";
+       << std::hash<std::string>{}(blendFile.string()) << ".thumb";
     return m_diskCacheDir / ss.str();
 }
 
@@ -422,8 +420,30 @@ std::optional<BlendThumbnail> ThumbnailCache::loadFromDiskCache(const std::files
     // Read version
     uint32_t version;
     file.read(reinterpret_cast<char*>(&version), sizeof(version));
-    if (!file || version != 1) {
-        return std::nullopt;  // Unsupported version
+    if (!file || version != 2) {
+        // Version 1 didn't have mod time - invalidate old cache
+        return std::nullopt;
+    }
+
+    // Read stored modification time
+    int64_t storedModTime;
+    file.read(reinterpret_cast<char*>(&storedModTime), sizeof(storedModTime));
+    if (!file) {
+        return std::nullopt;
+    }
+
+    // Check if source file has been modified (cache invalidation)
+    // Skip this check if stored time is 0 (file was inaccessible when cached)
+    if (storedModTime != 0) {
+        std::error_code ec;
+        auto currentModTime = std::filesystem::last_write_time(blendFile, ec);
+        if (!ec) {
+            int64_t currentModTimeCount = currentModTime.time_since_epoch().count();
+            if (currentModTimeCount != storedModTime) {
+                return std::nullopt;  // Source file changed, cache invalid
+            }
+        }
+        // If we can't get current mod time, use cached version anyway
     }
 
     // Read dimensions
@@ -448,7 +468,6 @@ std::optional<BlendThumbnail> ThumbnailCache::loadFromDiskCache(const std::files
             return std::nullopt;  // Incomplete read
         }
     }
-    // For empty thumbnails (no pixels), just return the empty struct
 
     return thumb;
 }
@@ -464,9 +483,18 @@ void ThumbnailCache::saveToDiskCache(const std::filesystem::path& blendFile, con
     // Write magic bytes
     file.write("BFFT", 4);
 
-    // Write version
-    uint32_t version = 1;
+    // Write version (2 = includes mod time)
+    uint32_t version = 2;
     file.write(reinterpret_cast<const char*>(&version), sizeof(version));
+
+    // Write source file modification time for cache invalidation
+    int64_t modTimeCount = 0;
+    std::error_code ec;
+    auto modTime = std::filesystem::last_write_time(blendFile, ec);
+    if (!ec) {
+        modTimeCount = modTime.time_since_epoch().count();
+    }
+    file.write(reinterpret_cast<const char*>(&modTimeCount), sizeof(modTimeCount));
 
     // Write dimensions (0x0 is valid as a "no thumbnail" marker)
     uint32_t width = static_cast<uint32_t>(std::max(0, thumbnail.width));
