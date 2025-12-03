@@ -1,5 +1,7 @@
 # Blender File Finder
 
+BlenderFileFinder is a free Linux tool that scans your drives for .blend files, generates visual previews, and lets you tag/organize them effortlessly. No more getting lost meaningless file names.
+
 ![Blender File Finder](BFF.png)
 
 A standalone application to browse, organize, and manage your .blend files with thumbnail previews and tagging support.
