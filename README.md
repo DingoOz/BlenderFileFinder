@@ -59,7 +59,32 @@ make -j$(nproc)
 
 ## Installation
 
-After building, you can install the application to your system:
+### Option 1: Debian/Ubuntu Package (.deb)
+
+Download and install the pre-built package:
+
+```bash
+sudo apt install ./blender-file-finder_1.0.0_amd64.deb
+```
+
+Or build your own .deb package:
+
+```bash
+./build-deb.sh 1.0.0
+sudo apt install ./build/blender-file-finder_1.0.0_amd64.deb
+```
+
+This installs system-wide to `/usr/bin/blender-file-finder` with proper desktop integration.
+
+To uninstall:
+
+```bash
+sudo apt remove blender-file-finder
+```
+
+### Option 2: User Installation (No Root Required)
+
+Install to your home directory:
 
 ```bash
 ./install-desktop.sh
