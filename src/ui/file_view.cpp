@@ -258,8 +258,26 @@ void FileView::renderGridView(std::vector<FileGroup>& groups, ThumbnailCache& ca
     }
 
     float windowWidth = ImGui::GetContentRegionAvail().x;
+    float windowHeight = ImGui::GetContentRegionAvail().y;
     float itemWidth = m_thumbnailSize + 20.0f;
+    float cardHeight = m_thumbnailSize + 50.0f;  // Must match card height in renderFileCard
     int columns = std::max(1, static_cast<int>(windowWidth / itemWidth));
+
+    // Viewport-based loading: calculate visible row range
+    float scrollY = ImGui::GetScrollY();
+    int firstVisibleRow = static_cast<int>(scrollY / cardHeight);
+    int visibleRowCount = static_cast<int>(windowHeight / cardHeight) + 2;  // +2 for partial rows
+    int lastVisibleRow = firstVisibleRow + visibleRowCount;
+
+    // Add prefetch buffer: load 2 extra rows above and below for smooth scrolling
+    int prefetchRows = 2;
+    int firstLoadRow = std::max(0, firstVisibleRow - prefetchRows);
+    int lastLoadRow = lastVisibleRow + prefetchRows;
+
+    if (m_currentFrame <= 10) {
+        DEBUG_LOG("Viewport: scrollY=" << scrollY << " firstRow=" << firstVisibleRow
+                  << " lastRow=" << lastVisibleRow << " loadRange=[" << firstLoadRow << "," << lastLoadRow << "]");
+    }
 
     int col = 0;
 
@@ -337,7 +355,8 @@ void FileView::renderGridView(std::vector<FileGroup>& groups, ThumbnailCache& ca
     auto loopStart = std::chrono::steady_clock::now();
 
     // Lambda to render a single file card
-    auto renderFileCard = [&](const BlendFileInfo* filePtr, int& col, int columns) {
+    // shouldLoadTexture: only true for items in visible viewport + prefetch buffer
+    auto renderFileCard = [&](const BlendFileInfo* filePtr, int& col, int columns, bool shouldLoadTexture) {
         auto itemStart = std::chrono::steady_clock::now();
         const BlendFileInfo& file = *filePtr;
 
@@ -431,16 +450,24 @@ void FileView::renderGridView(std::vector<FileGroup>& groups, ThumbnailCache& ca
         }
 
         if (!showingPreview) {
-            if (logThis) DEBUG_LOG("  [" << fileIndex << "] cache.getTexture...");
-            uint32_t textureId = cache.getTexture(file.path);
+            uint32_t textureId;
 
-            // If no embedded thumbnail, try to use first frame of animated preview
-            // Only use already-loaded previews to avoid performance issues
-            if (textureId == cache.getPlaceholderTexture()) {
-                PreviewFrames* preview = previewCache.getPreview(file.path);
-                if (preview && preview->loaded && !preview->textureIds.empty()) {
-                    textureId = preview->textureIds[0];
+            // Viewport-based loading: only request texture if item is visible
+            if (shouldLoadTexture) {
+                if (logThis) DEBUG_LOG("  [" << fileIndex << "] cache.getTexture...");
+                textureId = cache.getTexture(file.path);
+
+                // If no embedded thumbnail, try to use first frame of animated preview
+                // Only use already-loaded previews to avoid performance issues
+                if (textureId == cache.getPlaceholderTexture()) {
+                    PreviewFrames* preview = previewCache.getPreview(file.path);
+                    if (preview && preview->loaded && !preview->textureIds.empty()) {
+                        textureId = preview->textureIds[0];
+                    }
                 }
+            } else {
+                // Item is off-screen - use placeholder without triggering load
+                textureId = cache.getPlaceholderTexture();
             }
 
             if (logThis) DEBUG_LOG("  [" << fileIndex << "] AddImage (texture=" << textureId << ")...");
@@ -579,7 +606,10 @@ void FileView::renderGridView(std::vector<FileGroup>& groups, ThumbnailCache& ca
                 ImGui::Indent(8.0f);
 
                 for (const BlendFileInfo* filePtr : filesInFolder) {
-                    renderFileCard(filePtr, col, columns);
+                    // For folder-grouped view, calculate row based on fileIndex
+                    int currentRow = fileIndex / columns;
+                    bool shouldLoad = (currentRow >= firstLoadRow && currentRow <= lastLoadRow);
+                    renderFileCard(filePtr, col, columns, shouldLoad);
                 }
 
                 // End row if we're mid-row
@@ -593,8 +623,11 @@ void FileView::renderGridView(std::vector<FileGroup>& groups, ThumbnailCache& ca
         }
     } else {
         // Render files without folder grouping
-        for (const BlendFileInfo* filePtr : filesToDisplay) {
-            renderFileCard(filePtr, col, columns);
+        for (size_t i = 0; i < filesToDisplay.size(); ++i) {
+            const BlendFileInfo* filePtr = filesToDisplay[i];
+            int currentRow = static_cast<int>(i) / columns;
+            bool shouldLoad = (currentRow >= firstLoadRow && currentRow <= lastLoadRow);
+            renderFileCard(filePtr, col, columns, shouldLoad);
         }
     }
 

@@ -1,5 +1,7 @@
 # Blender File Finder
 
+![Blender File Finder](BFF.png)
+
 A standalone application to browse, organize, and manage your .blend files with thumbnail previews and tagging support.
 
 ## Features
