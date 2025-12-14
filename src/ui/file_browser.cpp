@@ -17,6 +17,7 @@ void FileBrowser::setCurrentPath(const std::filesystem::path& path) {
     if (std::filesystem::exists(path) && std::filesystem::is_directory(path)) {
         m_currentPath = std::filesystem::canonical(path);
         strncpy(m_pathBuffer, m_currentPath.string().c_str(), sizeof(m_pathBuffer) - 1);
+        m_pathBuffer[sizeof(m_pathBuffer) - 1] = '\0';  // Ensure null-termination
         refreshDirectoryList();
     }
 }

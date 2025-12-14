@@ -223,13 +223,24 @@ void ThumbnailCache::loadThread() {
 }
 
 void ThumbnailCache::processLoadedThumbnails() {
-    std::lock_guard<std::mutex> lock(m_loadedMutex);
+    // Extract all pending requests under the lock, then process without holding it
+    // This avoids lock order issues with loadThread() which acquires m_queueMutex first
+    std::queue<LoadRequest> toProcess;
+    {
+        std::lock_guard<std::mutex> lock(m_loadedMutex);
+        std::swap(toProcess, m_loadedQueue);
+    }
+
+    if (toProcess.empty()) {
+        return;
+    }
 
     int processedCount = 0;
     auto processStart = std::chrono::steady_clock::now();
+    std::vector<std::string> processedKeys;  // Track keys to update in m_loadingSet
 
-    while (!m_loadedQueue.empty()) {
-        auto& request = m_loadedQueue.front();
+    while (!toProcess.empty()) {
+        auto& request = toProcess.front();
         std::string key = request.path.string();
 
         uint32_t textureId;
@@ -258,17 +269,20 @@ void ThumbnailCache::processLoadedThumbnails() {
 
             if (existingIsReal && !newIsReal) {
                 // Don't overwrite a real thumbnail with placeholder - skip
-                m_loadedQueue.pop();
+                processedKeys.push_back(key);
+                toProcess.pop();
                 continue;
             }
             if (existingIsReal && newIsReal) {
                 // Both real - keep existing, skip new
-                m_loadedQueue.pop();
+                processedKeys.push_back(key);
+                toProcess.pop();
                 continue;
             }
             if (!existingIsReal && !newIsReal) {
                 // Both placeholder - skip
-                m_loadedQueue.pop();
+                processedKeys.push_back(key);
+                toProcess.pop();
                 continue;
             }
             // Existing is placeholder, new is real - remove old entry to replace
@@ -290,26 +304,30 @@ void ThumbnailCache::processLoadedThumbnails() {
         m_cacheMap[key] = m_cacheList.begin();
         m_totalLoaded++;
 
-        // Remove from loading set and mark as recently loaded (anti-thrashing)
-        {
-            std::lock_guard<std::mutex> queueLock(m_queueMutex);
-            m_loadingSet.erase(key);
-            m_recentlyLoaded[key] = std::chrono::steady_clock::now();
+        processedKeys.push_back(key);
+        toProcess.pop();
+    }
 
-            // Periodically clean up old entries from recentlyLoaded (every 100 items)
-            if (m_recentlyLoaded.size() > 1000 && (processedCount % 100) == 0) {
-                auto now = std::chrono::steady_clock::now();
-                for (auto it = m_recentlyLoaded.begin(); it != m_recentlyLoaded.end(); ) {
-                    if (now - it->second > std::chrono::seconds(COOLDOWN_SECONDS * 2)) {
-                        it = m_recentlyLoaded.erase(it);
-                    } else {
-                        ++it;
-                    }
+    // Update loading set and recently loaded map (separate lock acquisition)
+    // This ensures consistent lock ordering: never hold m_loadedMutex while acquiring m_queueMutex
+    {
+        std::lock_guard<std::mutex> queueLock(m_queueMutex);
+        auto now = std::chrono::steady_clock::now();
+        for (const auto& key : processedKeys) {
+            m_loadingSet.erase(key);
+            m_recentlyLoaded[key] = now;
+        }
+
+        // Periodically clean up old entries from recentlyLoaded
+        if (m_recentlyLoaded.size() > 1000) {
+            for (auto it = m_recentlyLoaded.begin(); it != m_recentlyLoaded.end(); ) {
+                if (now - it->second > std::chrono::seconds(COOLDOWN_SECONDS * 2)) {
+                    it = m_recentlyLoaded.erase(it);
+                } else {
+                    ++it;
                 }
             }
         }
-
-        m_loadedQueue.pop();
     }
 
     // Log if we processed thumbnails and it took significant time

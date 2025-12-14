@@ -81,7 +81,9 @@ std::optional<BlendThumbnail> BlendParser::extractThumbnail(std::ifstream& file,
         return std::nullopt;
     }
 
-    size_t pixelDataSize = static_cast<size_t>(width * height * 4);
+    // Perform multiplication in size_t to prevent potential overflow
+    // (even though current limits prevent it, this is defensive)
+    size_t pixelDataSize = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
     if (block.size < static_cast<int32_t>(8 + pixelDataSize)) {
         return std::nullopt;
     }

@@ -6,6 +6,12 @@
 
 namespace BlenderFileFinder {
 
+// Helper to safely get text from SQLite column (returns empty string if NULL)
+static inline std::string safeColumnText(sqlite3_stmt* stmt, int col) {
+    const unsigned char* text = sqlite3_column_text(stmt, col);
+    return text ? reinterpret_cast<const char*>(text) : std::string{};
+}
+
 Database::Database() = default;
 
 Database::~Database() {
@@ -194,11 +200,10 @@ std::vector<ScanLocation> Database::getAllScanLocations() {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             ScanLocation loc;
             loc.id = sqlite3_column_int64(stmt, 0);
-            loc.path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            loc.path = safeColumnText(stmt, 1);
             loc.recursive = sqlite3_column_int(stmt, 2) != 0;
             loc.enabled = sqlite3_column_int(stmt, 3) != 0;
-            const char* name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-            loc.name = name ? name : "";
+            loc.name = safeColumnText(stmt, 4);
             result.push_back(loc);
         }
         sqlite3_finalize(stmt);
@@ -221,11 +226,10 @@ std::optional<ScanLocation> Database::getScanLocation(int64_t id) {
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             ScanLocation loc;
             loc.id = sqlite3_column_int64(stmt, 0);
-            loc.path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            loc.path = safeColumnText(stmt, 1);
             loc.recursive = sqlite3_column_int(stmt, 2) != 0;
             loc.enabled = sqlite3_column_int(stmt, 3) != 0;
-            const char* name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-            loc.name = name ? name : "";
+            loc.name = safeColumnText(stmt, 4);
             sqlite3_finalize(stmt);
             return loc;
         }
@@ -340,13 +344,12 @@ std::optional<BlendFileInfo> Database::getFileByPath(const std::filesystem::path
 
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             BlendFileInfo file;
-            file.path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-            file.filename = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            file.path = safeColumnText(stmt, 0);
+            file.filename = safeColumnText(stmt, 1);
             file.fileSize = static_cast<uintmax_t>(sqlite3_column_int64(stmt, 2));
             auto duration = std::filesystem::file_time_type::duration(sqlite3_column_int64(stmt, 3));
             file.modifiedTime = std::filesystem::file_time_type(duration);
-            const char* ver = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-            file.metadata.blenderVersion = ver ? ver : "";
+            file.metadata.blenderVersion = safeColumnText(stmt, 4);
             file.metadata.isCompressed = sqlite3_column_int(stmt, 5) != 0;
             file.metadata.objectCount = sqlite3_column_int(stmt, 6);
             file.metadata.meshCount = sqlite3_column_int(stmt, 7);
@@ -381,13 +384,12 @@ std::vector<BlendFileInfo> Database::getAllFiles() {
         auto fetchStart = std::chrono::steady_clock::now();
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             BlendFileInfo file;
-            file.path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-            file.filename = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            file.path = safeColumnText(stmt, 0);
+            file.filename = safeColumnText(stmt, 1);
             file.fileSize = static_cast<uintmax_t>(sqlite3_column_int64(stmt, 2));
             auto duration = std::filesystem::file_time_type::duration(sqlite3_column_int64(stmt, 3));
             file.modifiedTime = std::filesystem::file_time_type(duration);
-            const char* ver = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-            file.metadata.blenderVersion = ver ? ver : "";
+            file.metadata.blenderVersion = safeColumnText(stmt, 4);
             file.metadata.isCompressed = sqlite3_column_int(stmt, 5) != 0;
             file.metadata.objectCount = sqlite3_column_int(stmt, 6);
             file.metadata.meshCount = sqlite3_column_int(stmt, 7);
@@ -420,13 +422,12 @@ std::vector<BlendFileInfo> Database::getFilesByScanLocation(int64_t scanLocation
         sqlite3_bind_int64(stmt, 1, scanLocationId);
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             BlendFileInfo file;
-            file.path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-            file.filename = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            file.path = safeColumnText(stmt, 0);
+            file.filename = safeColumnText(stmt, 1);
             file.fileSize = static_cast<uintmax_t>(sqlite3_column_int64(stmt, 2));
             auto duration = std::filesystem::file_time_type::duration(sqlite3_column_int64(stmt, 3));
             file.modifiedTime = std::filesystem::file_time_type(duration);
-            const char* ver = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-            file.metadata.blenderVersion = ver ? ver : "";
+            file.metadata.blenderVersion = safeColumnText(stmt, 4);
             file.metadata.isCompressed = sqlite3_column_int(stmt, 5) != 0;
             file.metadata.objectCount = sqlite3_column_int(stmt, 6);
             file.metadata.meshCount = sqlite3_column_int(stmt, 7);
@@ -454,13 +455,12 @@ std::vector<BlendFileInfo> Database::searchFiles(const std::string& query) {
 
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             BlendFileInfo file;
-            file.path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-            file.filename = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            file.path = safeColumnText(stmt, 0);
+            file.filename = safeColumnText(stmt, 1);
             file.fileSize = static_cast<uintmax_t>(sqlite3_column_int64(stmt, 2));
             auto duration = std::filesystem::file_time_type::duration(sqlite3_column_int64(stmt, 3));
             file.modifiedTime = std::filesystem::file_time_type(duration);
-            const char* ver = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-            file.metadata.blenderVersion = ver ? ver : "";
+            file.metadata.blenderVersion = safeColumnText(stmt, 4);
             file.metadata.isCompressed = sqlite3_column_int(stmt, 5) != 0;
             file.metadata.objectCount = sqlite3_column_int(stmt, 6);
             file.metadata.meshCount = sqlite3_column_int(stmt, 7);
@@ -508,8 +508,8 @@ int Database::cleanupMissingFiles() {
 
     if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
-            std::string path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-            if (!std::filesystem::exists(path)) {
+            std::string path = safeColumnText(stmt, 0);
+            if (!path.empty() && !std::filesystem::exists(path)) {
                 pathsToRemove.push_back(path);
             }
         }
@@ -569,7 +569,10 @@ std::vector<std::string> Database::getAllTags() {
 
     if (sqlite3_prepare_v2(m_db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
-            result.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
+            std::string tag = safeColumnText(stmt, 0);
+            if (!tag.empty()) {
+                result.emplace_back(std::move(tag));
+            }
         }
         sqlite3_finalize(stmt);
     }
@@ -656,7 +659,10 @@ std::vector<std::string> Database::getTagsForFile(const std::filesystem::path& f
         sqlite3_bind_text(stmt, 1, pathStr.c_str(), -1, SQLITE_TRANSIENT);
 
         while (sqlite3_step(stmt) == SQLITE_ROW) {
-            result.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
+            std::string tag = safeColumnText(stmt, 0);
+            if (!tag.empty()) {
+                result.emplace_back(std::move(tag));
+            }
         }
         sqlite3_finalize(stmt);
     }
@@ -688,13 +694,12 @@ std::vector<BlendFileInfo> Database::getFilesWithTag(const std::string& tagName)
 
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             BlendFileInfo file;
-            file.path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-            file.filename = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            file.path = safeColumnText(stmt, 0);
+            file.filename = safeColumnText(stmt, 1);
             file.fileSize = static_cast<uintmax_t>(sqlite3_column_int64(stmt, 2));
             auto duration = std::filesystem::file_time_type::duration(sqlite3_column_int64(stmt, 3));
             file.modifiedTime = std::filesystem::file_time_type(duration);
-            const char* ver = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-            file.metadata.blenderVersion = ver ? ver : "";
+            file.metadata.blenderVersion = safeColumnText(stmt, 4);
             file.metadata.isCompressed = sqlite3_column_int(stmt, 5) != 0;
             file.metadata.objectCount = sqlite3_column_int(stmt, 6);
             file.metadata.meshCount = sqlite3_column_int(stmt, 7);

@@ -25,6 +25,20 @@ PreviewCache::PreviewCache() {
 PreviewCache::~PreviewCache() {
     cancelGeneration();
 
+    // Move threads out of storage before joining to avoid holding lock during join
+    std::vector<std::thread> threadsToJoin;
+    {
+        std::lock_guard<std::mutex> lock(m_pendingMutex);
+        std::swap(threadsToJoin, m_loadThreads);
+    }
+
+    // Join all background loading threads (outside the lock)
+    for (auto& thread : threadsToJoin) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+
     // Clean up textures
     for (auto& [path, preview] : m_previews) {
         for (GLuint texId : preview.textureIds) {
@@ -37,8 +51,13 @@ PreviewCache::~PreviewCache() {
 
 std::string PreviewCache::getFileHash(const std::filesystem::path& blendFile) const {
     // Simple hash based on path and modification time
-    auto modTime = std::filesystem::last_write_time(blendFile);
-    auto modTimeT = modTime.time_since_epoch().count();
+    int64_t modTimeT = 0;
+    std::error_code ec;
+    auto modTime = std::filesystem::last_write_time(blendFile, ec);
+    if (!ec) {
+        modTimeT = modTime.time_since_epoch().count();
+    }
+    // If file doesn't exist or can't get mod time, use 0 - hash will still be unique per path
 
     std::stringstream ss;
     ss << std::hex << std::hash<std::string>{}(blendFile.string()) << "_" << modTimeT;
@@ -115,15 +134,17 @@ void PreviewCache::loadPreview(const std::filesystem::path& blendFile) {
     // Create placeholder entry
     m_previews[blendFile] = PreviewFrames{};
 
-    // Load frames in background
-    std::thread([this, blendFile]() {
-        auto previewDir = getPreviewDir(blendFile);
+    // Load frames in background using a managed thread
+    // Capture copies of data to avoid referencing 'this' members that could change
+    int frameCount = m_frameCount;
+    std::filesystem::path previewDir = getPreviewDir(blendFile);
 
+    std::thread loadThread([this, blendFile, previewDir, frameCount]() {
         PendingLoad pending;
         pending.blendFile = blendFile;
 
         // Load all frame images
-        for (int i = 0; i < m_frameCount; ++i) {
+        for (int i = 0; i < frameCount; ++i) {
             std::stringstream ss;
             ss << "frame_" << std::setfill('0') << std::setw(3) << i << ".png";
             auto framePath = previewDir / ss.str();
@@ -145,14 +166,44 @@ void PreviewCache::loadPreview(const std::filesystem::path& blendFile) {
             std::lock_guard<std::mutex> lock(m_pendingMutex);
             m_pendingLoads.push_back(std::move(pending));
         }
-    }).detach();
+    });
+
+    // Move the thread to managed storage or detach if we must
+    // Note: We store the thread so it can be joined on destruction
+    {
+        std::lock_guard<std::mutex> lock(m_pendingMutex);
+        m_loadThreads.push_back(std::move(loadThread));
+    }
 }
 
 void PreviewCache::processLoadedPreviews() {
     std::vector<PendingLoad> toProcess;
+    std::vector<std::thread> finishedThreads;
     {
         std::lock_guard<std::mutex> lock(m_pendingMutex);
         std::swap(toProcess, m_pendingLoads);
+
+        // Move finished threads out for joining (can't join while holding lock)
+        auto it = m_loadThreads.begin();
+        while (it != m_loadThreads.end()) {
+            // A thread is finished if we can try_join (not directly available in std::thread)
+            // Instead, we check if all pending loads are processed by count
+            // For simplicity, just move all joinable threads out periodically
+            if (m_loadThreads.size() > 50) {
+                // Clean up when we have many threads accumulated
+                finishedThreads.push_back(std::move(*it));
+                it = m_loadThreads.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    // Join finished threads outside the lock
+    for (auto& thread : finishedThreads) {
+        if (thread.joinable()) {
+            thread.join();
+        }
     }
 
     for (auto& pending : toProcess) {

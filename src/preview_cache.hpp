@@ -204,6 +204,7 @@ private:
 
     std::mutex m_pendingMutex;              ///< Protects pending loads
     std::vector<PendingLoad> m_pendingLoads; ///< Frames awaiting GPU upload
+    std::vector<std::thread> m_loadThreads;  ///< Background loading threads
 };
 
 } // namespace BlenderFileFinder

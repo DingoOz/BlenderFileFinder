@@ -1078,13 +1078,29 @@ void App::scanAllLocations() {
     DEBUG_LOG("Starting scan of " << m_pendingScanLocations.size() << " locations");
 }
 
+// Helper to escape shell special characters for safe use in double quotes
+// In double quotes, $, `, \, ", and ! have special meaning
+static std::string escapeShellArg(const std::string& arg) {
+    std::string result;
+    result.reserve(arg.size() + 10);  // Pre-allocate for potential escapes
+    for (char c : arg) {
+        if (c == '"' || c == '$' || c == '`' || c == '\\' || c == '!') {
+            result += '\\';
+        }
+        result += c;
+    }
+    return result;
+}
+
 void App::openInBlender(const std::filesystem::path& path) {
-    std::string command = "blender \"" + path.string() + "\" &";
+    std::string escapedPath = escapeShellArg(path.string());
+    std::string command = "blender \"" + escapedPath + "\" &";
     std::system(command.c_str());
 }
 
 void App::openContainingFolder(const std::filesystem::path& path) {
-    std::string command = "xdg-open \"" + path.parent_path().string() + "\" &";
+    std::string escapedPath = escapeShellArg(path.parent_path().string());
+    std::string command = "xdg-open \"" + escapedPath + "\" &";
     std::system(command.c_str());
 }
 
